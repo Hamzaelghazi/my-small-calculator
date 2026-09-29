@@ -721,6 +721,103 @@ export function extractPhones(html) {
   return out;
 }
 
+/** Where a phone number was found, most reliable first. */
+export const PHONE_TYPES = {
+  TEL: 'call link',
+  SCHEMA: 'site data',
+  WHATSAPP: 'WhatsApp',
+  TEXT: 'page text',
+};
+const PHONE_RANK = { 'call link': 3, 'site data': 2, WhatsApp: 2, 'page text': 1 };
+
+/**
+ * Clean a phone candidate to "+digits" or "digits". Rejects things that only
+ * look like numbers: too short or long, dates, year ranges, repeated digits.
+ *
+ * @param {string} raw
+ * @returns {string|null}
+ */
+export function normalizePhone(raw) {
+  const v = String(raw || '').trim();
+  if (/^\d{4}\s*[-–]\s*\d{4}$/.test(v)) return null; // 2019-2024
+  if (/\b\d{1,4}[./-]\d{1,2}[./-]\d{1,4}\b/.test(v) && !/\s/.test(v) && v.replace(/\D/g, '').length <= 8) return null; // dates
+  const digits = v.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return null;
+  if (/^(\d)\1+$/.test(digits) || /^0+$/.test(digits) || /^1234567/.test(digits)) return null;
+  return (v.startsWith('+') || v.startsWith('00') ? '+' : '') + (v.startsWith('00') ? digits.slice(2) : digits);
+}
+
+/** Visible text of a page: no scripts, styles or tags. */
+function pageText(html) {
+  return decodeEntities(
+    String(html || '')
+      .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ')
+  ).replace(/\s+/g, ' ');
+}
+
+const PHONE_TEXT_RE =
+  /\b(?:phone|telephone|tel|call|mobile|cell|whats\s?app|hotline|contact\s+number)\b[\s:：\-–]*(?:(?:number|no\.?|#|us|at|on|now|today)\b[\s:：\-–.]*){0,3}(\+?\(?\d[\d\s().\-]{5,20}\d)/gi;
+
+/**
+ * Phone numbers with where they came from, most reliable first:
+ * tel: links, schema.org "telephone" data, WhatsApp links, and numbers written
+ * next to a label such as "Phone:" or "Call us" in the page text.
+ *
+ * @param {{ path: string, html: string }[]} pages
+ * @returns {{ phone: string, types: string[], sources: string[] }[]}
+ */
+export function extractPhoneDetails(pages) {
+  const byKey = new Map();
+  const add = (raw, type, path) => {
+    const phone = normalizePhone(raw);
+    if (!phone) return;
+    const key = phone.replace(/\D/g, '').slice(-9);
+    let entry = byKey.get(key);
+    if (!entry) {
+      entry = { phone, types: new Set(), sources: new Set(), order: byKey.size };
+      byKey.set(key, entry);
+    }
+    // Keep the most complete form, e.g. with the country code.
+    if (phone.replace(/\D/g, '').length > entry.phone.replace(/\D/g, '').length) entry.phone = phone;
+    entry.types.add(type);
+    entry.sources.add(path);
+  };
+
+  for (const { path, html } of pages) {
+    const src = String(html || '');
+    for (const p of extractPhones(src)) add(p, PHONE_TYPES.TEL, path);
+    for (const m of src.matchAll(/"telephone"\s*:\s*"([^"]{7,40})"/gi)) add(decodeEntities(m[1]), PHONE_TYPES.SCHEMA, path);
+    for (const m of src.matchAll(/(?:wa\.me\/|api\.whatsapp\.com\/send\/?\?phone=|whatsapp:\/\/send\?phone=)(\+?\d{7,15})/gi)) {
+      add(m[1].startsWith('+') ? m[1] : '+' + m[1], PHONE_TYPES.WHATSAPP, path);
+    }
+    for (const m of pageText(src).matchAll(PHONE_TEXT_RE)) add(m[1], PHONE_TYPES.TEXT, path);
+  }
+
+  const rank = (e) => Math.max(...[...e.types].map((t) => PHONE_RANK[t] || 0));
+  return [...byKey.values()]
+    .sort((a, b) => rank(b) - rank(a) || b.sources.size - a.sources.size || a.order - b.order)
+    .map((e) => ({ phone: e.phone, types: [...e.types], sources: [...e.sources] }));
+}
+
+/**
+ * Phone details for any lead, including ones saved before phoneDetails existed.
+ *
+ * @param {object} lead
+ * @returns {{ phone: string, types: string[], sources: string[] }[]}
+ */
+export function leadPhoneDetails(lead) {
+  if (lead && Array.isArray(lead.phoneDetails) && lead.phoneDetails.length) return lead.phoneDetails;
+  return ((lead && lead.phones) || []).map((phone) => ({ phone, types: [PHONE_TYPES.TEL], sources: [] }));
+}
+
+/** Best number to call for any lead, or null. */
+export function leadBestPhone(lead) {
+  const d = leadPhoneDetails(lead);
+  return (lead && lead.bestPhone) || (d.length ? d[0].phone : null);
+}
+
 const SHARE_RE = /sharer|share\?|\/share(?:\/|$)|sharearticle|intent\/tweet|\/intent\/|\/p\/|\/reels?\/|\/watch|\/embed|\/plugins\/|\/dialog\//i;
 const RESERVED = {
   instagram: new Set(['p', 'reel', 'reels', 'explore', 'stories', 'accounts', 'tv', 'direct', 'about', 'legal', 'developer', 'embed.js']),
@@ -862,7 +959,10 @@ export function findFollowLinks(html, origin, exclude, limit = MAX_FOLLOWED_LINK
  * @property {string}  myshopifyDomain
  * @property {{ email: string, score: number, tag: string, sources: string[] }[]} emails
  * @property {string|null} bestEmail    Highest scoring address, null when none (or only no-reply).
- * @property {string[]} phones
+ * @property {string[]} phones           All numbers, best first.
+ * @property {{ phone: string, types: string[], sources: string[] }[]} phoneDetails
+ * @property {string|null} bestPhone     Most reliable number for a call.
+ * @property {string|null} whatsapp      A number with a WhatsApp link, if any.
  * @property {Record<string, string|null>} socials
  * @property {string[]} pagesChecked    Paths that returned a readable page.
  * @property {import('./sales.js').SalesEstimate|null} sales  Rough size estimate (Shopify stores only).
@@ -881,6 +981,9 @@ function emptyResult(input) {
     emails: [],
     bestEmail: null,
     phones: [],
+    phoneDetails: [],
+    bestPhone: null,
+    whatsapp: null,
     socials: Object.fromEntries(SOCIAL_KEYS.map((k) => [k, null])),
     pagesChecked: [],
     sales: null,
@@ -957,16 +1060,11 @@ function collectContacts(result, pages, hosts) {
   result.emails = rankEmails(emailSources, scoreContext(result.storeName, hosts, result.myshopifyDomain));
   result.bestEmail = pickBest(result.emails);
 
-  const seen = new Set();
-  for (const { html } of pages) {
-    for (const p of extractPhones(html)) {
-      const k = p.replace(/\D/g, '');
-      if (!seen.has(k)) {
-        seen.add(k);
-        result.phones.push(p);
-      }
-    }
-  }
+  result.phoneDetails = extractPhoneDetails(pages);
+  result.phones = result.phoneDetails.map((d) => d.phone);
+  result.bestPhone = result.phoneDetails.length ? result.phoneDetails[0].phone : null;
+  const wa = result.phoneDetails.find((d) => d.types.includes(PHONE_TYPES.WHATSAPP));
+  result.whatsapp = wa ? wa.phone : null;
   result.socials = extractSocials(pages.map((p) => p.html));
 }
 

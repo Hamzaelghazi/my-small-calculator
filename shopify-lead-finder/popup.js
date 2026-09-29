@@ -1,5 +1,6 @@
-import { scanStore, normalizeInput, rescoreLead } from './lib/scanner.js';
-import { getLeads, saveLead, onLeadsChanged } from './lib/storage.js';
+import { scanStore, normalizeInput, rescoreLead, leadPhoneDetails, PHONE_TYPES } from './lib/scanner.js';
+import { getLeads, saveLead, onLeadsChanged, getHistory, recordScans } from './lib/storage.js';
+import { buildScanIndex, describePrevious } from './lib/history.js';
 import { h, copyButton, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -8,6 +9,27 @@ const $ = (id) => document.getElementById(id);
 let origin = null;
 /** Latest scan result (or the saved lead for this store). */
 let current = null;
+
+/** Earlier scans of this store, looked up when the popup opens. */
+let previous = null;
+
+async function loadPrevious() {
+  try {
+    const [leads, history] = await Promise.all([getLeads(), getHistory()]);
+    previous = buildScanIndex(leads, history).get(origin) || null;
+  } catch {
+    previous = null;
+  }
+}
+
+/** Show whether (and when) this store was scanned before opening the popup. */
+function renderSeen(afterScan = false) {
+  const el = $('seen');
+  el.hidden = !previous;
+  if (previous) {
+    el.replaceChildren(h('strong', { text: afterScan ? 'Scanned before. ' : 'Already scanned. ' }), describePrevious(previous));
+  }
+}
 
 function setCount(n) {
   $('savedCount').textContent = `${n} saved`;
@@ -156,12 +178,44 @@ function renderStore(res) {
 }
 
 function renderPhones(res) {
-  if (!res.phones.length) return null;
+  const phones = leadPhoneDetails(res);
+  if (!phones.length) return null;
   return h(
     'section',
     { class: 'section' },
-    h('h3', { class: 'section-title', text: 'Phone' }),
-    h('div', { class: 'phone-list' }, res.phones.map((p) => h('a', { href: `tel:${p}`, text: p })))
+    h('h3', { class: 'section-title', text: phones.length > 1 ? `Phone (${phones.length})` : 'Phone' }),
+    h(
+      'ul',
+      { class: 'email-list' },
+      phones.map((d, i) => {
+        const isWa = d.types.includes(PHONE_TYPES.WHATSAPP);
+        return h(
+          'li',
+          { class: 'email-item' },
+          h(
+            'span',
+            { class: 'email-addr' },
+            h('a', { class: i === 0 ? 'phone-best' : '', href: `tel:${d.phone}`, text: d.phone, title: 'Call' }),
+            isWa
+              ? h('a', {
+                  class: 'wa-link',
+                  href: `https://wa.me/${d.phone.replace(/\D/g, '')}`,
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                  text: 'WhatsApp',
+                })
+              : null
+          ),
+          copyButton(d.phone),
+          h(
+            'span',
+            { class: 'email-meta' },
+            i === 0 ? h('span', { class: 'badge badge-business', text: 'best to call' }) : null,
+            h('span', { text: `Found in ${d.types.join(', ')}` })
+          )
+        );
+      })
+    )
   );
 }
 
@@ -193,10 +247,10 @@ function render(res) {
   out.replaceChildren(
     ...[
       res.bestEmail ? renderHero(res) : renderEmptyEmails(res),
+      renderPhones(res),
       renderOthers(res),
       renderStore(res),
       renderSales(res),
-      renderPhones(res),
       renderSocials(res),
       h('p', {
         class: 'meta-line',
@@ -229,6 +283,11 @@ async function scan() {
       $('progressText').textContent = progressText(p);
     },
   });
+  try {
+    await recordScans([{ result: res, origin }]);
+  } catch {
+    /* history is a convenience; the scan result still shows */
+  }
 
   $('progress').hidden = true;
   btn.disabled = false;
@@ -236,6 +295,7 @@ async function scan() {
   current = res;
   render(res);
   setSaved(false);
+  renderSeen(true);
 }
 
 async function save() {
@@ -303,8 +363,10 @@ async function init() {
     current = rescoreLead(saved);
     render(current);
     setSaved(true);
-    $('scanBtn').textContent = 'Scan again';
   }
+  await loadPrevious();
+  renderSeen();
+  if (previous) $('scanBtn').textContent = 'Scan again';
 }
 
 init();

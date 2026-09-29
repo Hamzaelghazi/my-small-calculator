@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Shopify Lead Finder",
   "short_name": "Lead Finder",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Find publicly listed contact emails, phones and socials of Shopify stores, rank the best email, and export leads to CSV.",
   "permissions": ["storage", "unlimitedStorage", "activeTab"],
   "host_permissions": ["<all_urls>"],

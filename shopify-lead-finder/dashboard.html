@@ -59,8 +59,8 @@
           <label class="check">
             <input type="checkbox" id="skipSaved" checked>
             <span>
-              Skip stores already saved
-              <small>Uncheck to re-scan and refresh them</small>
+              Skip stores already scanned
+              <small>Remembers every store you scanned, with the date. Uncheck to scan them again.</small>
             </span>
           </label>
 
@@ -69,6 +69,7 @@
             <button type="button" id="stopBtn" class="btn" disabled>Stop</button>
           </div>
           <button type="button" id="retryBtn" class="btn btn-small" hidden>Retry failed (0)</button>
+          <button type="button" id="clearHistoryBtn" class="btn btn-small btn-ghost">Clear scan history</button>
         </div>
       </div>
 
@@ -82,6 +83,11 @@
         </div>
       </div>
 
+      <details class="skipped" id="skipped" hidden>
+        <summary id="skippedSummary"></summary>
+        <ul class="skipped-list" id="skippedList"></ul>
+      </details>
+
       <div class="table-wrap" id="resultsWrap" hidden>
         <table class="table" aria-label="Scan results">
           <thead>
@@ -91,6 +97,7 @@
               <th scope="col">Shopify</th>
               <th scope="col">Best email</th>
               <th scope="col">Other emails</th>
+              <th scope="col">Phone</th>
               <th scope="col">Est. sales</th>
               <th scope="col">Socials</th>
               <th scope="col">Status</th>
@@ -119,6 +126,10 @@
           <div class="presets" id="sizePresets" role="group" aria-label="Store size presets"></div>
         </div>
         <div class="chips" id="sizeChips" role="group" aria-label="Show store sizes"></div>
+      </div>
+      <div class="filter-group">
+        <div class="filter-label"><span>Contact</span></div>
+        <div class="chips" id="contactChips" role="group" aria-label="Contact filters"></div>
       </div>
       <p class="hint" id="filterNote"></p>
     </section>

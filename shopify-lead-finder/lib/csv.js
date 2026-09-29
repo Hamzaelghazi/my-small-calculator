@@ -2,6 +2,8 @@
  * CSV export for saved leads.
  */
 
+import { leadBestPhone, leadPhoneDetails } from './scanner.js';
+
 export const CSV_COLUMNS = [
   'Store Name',
   'URL',
@@ -9,8 +11,10 @@ export const CSV_COLUMNS = [
   'MyShopify Domain',
   'Best Email',
   'Best Email Tag',
+  'Best Phone',
   'All Emails',
   'Phones',
+  'WhatsApp',
   'Instagram',
   'Facebook',
   'TikTok',
@@ -25,6 +29,7 @@ export const CSV_COLUMNS = [
   'Median Price',
   'Tech Stack',
   'Status',
+  'First Scanned',
   'Scanned At',
 ];
 
@@ -72,8 +77,10 @@ export function leadToRow(lead) {
     lead.myshopifyDomain || '',
     lead.bestEmail || '',
     best ? best.tag : '',
+    leadBestPhone(lead) || '',
     emails.map((e) => e.email).join('; '),
-    (lead.phones || []).join('; '),
+    leadPhoneDetails(lead).map((d) => d.phone).join('; '),
+    lead.whatsapp || '',
     s.instagram || '',
     s.facebook || '',
     s.tiktok || '',
@@ -88,6 +95,7 @@ export function leadToRow(lead) {
     sales && sales.medianPrice != null ? `${sales.currency ? sales.currency + ' ' : ''}${sales.medianPrice}` : '',
     sales ? sales.apps.join('; ') : '',
     statusLabel(lead),
+    lead.firstScannedAt || lead.scannedAt || '',
     lead.scannedAt || '',
   ];
 }

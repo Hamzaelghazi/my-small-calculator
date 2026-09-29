@@ -21,7 +21,8 @@ After you edit any file, click the reload icon on the extension's card in `chrom
 3. The progress line shows each page as it's checked. A scan usually takes 2–10 seconds. Keep the popup open until it finishes.
 4. The **best email** is shown large at the top with its tag. Click **Copy** to copy it.
 5. Other emails are listed below with their score and tag. You'll also see the Shopify badge and `*.myshopify.com` domain, any phone numbers, and social profile links.
-6. Click **Save lead** to add the store to your saved leads. When you reopen the popup on a store you've already saved, it shows the saved result, and **Scan again** refreshes it.
+6. Click **Save lead** to add the store to your saved leads.
+7. If you've scanned the store before, a notice at the top says so, with the date and whether it was saved ("Already scanned. Scanned Sep 29, 2026 · saved as a lead"). That works for stores you scanned but didn't save, too. **Scan again** refreshes it.
 
 ## Scan many stores (bulk scanner)
 
@@ -31,7 +32,7 @@ Click **Open bulk scanner** in the popup. It opens a full tab.
 2. Pick your options:
    - **Stores at a time** (4, 10, 20 or 30, default 10): how many stores are scanned in parallel. 10 is safe. 20–30 is faster, but more stores may block you with "Blocked by the site (429)".
    - **Shopify stores only**: non-Shopify results still show in the table but aren't saved.
-   - **Skip stores already saved**: don't re-scan stores that are already in your saved leads. Uncheck it to refresh them.
+   - **Skip stores already scanned** (on by default): the extension remembers every store you scan, with the date, whether it was saved or not. Stores already scanned are skipped and listed under "N stores skipped: already scanned" with their dates. The count under the URL box warns you before you start. Uncheck it to scan them again; re-scanned rows are marked "Scanned before on …". Failed scans don't count, so they're always tried again. **Clear scan history** forgets the list. Saved leads are kept and still count as scanned.
 3. Click **Start scan** (or press Ctrl/⌘ + Enter in the box). Rows appear as each store finishes. Click **Stop** to cancel. In-flight requests are aborted immediately.
 4. Finished stores are **saved automatically** in batches every 1.5 seconds, so closing the tab loses at most the last couple of seconds. Stores that failed (timeout, blocked, not found) are shown in the table but not saved.
 5. When the run ends, **Retry failed (N)** scans the stores that timed out or were blocked again. Try it a few minutes later, or at a lower speed.
@@ -43,7 +44,7 @@ Paste the whole list at once. There's no limit on list size.
 
 - **Speed:** each store takes a few seconds, since up to 16 pages are checked. At 20 stores at a time, 1000 stores usually take about 10–25 minutes, depending on how fast the stores respond. The progress line shows how many are done, how many failed, and an estimate of the time left.
 - **Leave the tab open.** It can be in the background, but it has to stay open. Don't let the computer go to sleep.
-- **Resume:** your URL list is remembered, and **Skip stores already saved** is on by default. If the tab closes or you press Stop, open the bulk scanner again and press **Start scan** to carry on with the stores not saved yet. Non-Shopify stores and failed stores aren't saved, so those are checked again.
+- **Resume:** your URL list is remembered, and **Skip stores already scanned** is on by default. If the tab closes or you press Stop, open the bulk scanner again and press **Start scan** to carry on where you left off. Only failed stores are tried again.
 - **Blocked stores:** hitting many stores quickly can get you rate-limited (429). Use **Retry failed** afterwards, or lower the speed.
 - **Storage:** the extension has unlimited local storage, so tens of thousands of leads fit. The saved-leads table shows the newest 300. Search to find others. Export CSV and Copy all best emails always include every matching lead.
 
@@ -67,7 +68,7 @@ The lower section lists every saved lead, including ones saved from the popup.
 - **Copy all best emails** copies the best email from each visible lead, one per line.
 - **Delete** removes one lead. **Clear all** removes all of them after you confirm.
 
-CSV columns: Store Name, URL, Shopify, MyShopify Domain, Best Email, Best Email Tag, All Emails, Phones, Instagram, Facebook, TikTok, LinkedIn, X, YouTube, Pinterest, Est. Monthly Sales, Store Size, Suggested Offer, Products, Median Price, Tech Stack, Status, Scanned At. The file is UTF-8 with a BOM, so Excel opens accented characters correctly.
+CSV columns: Store Name, URL, Shopify, MyShopify Domain, Best Email, Best Email Tag, Best Phone, All Emails, Phones, WhatsApp, Instagram, Facebook, TikTok, LinkedIn, X, YouTube, Pinterest, Est. Monthly Sales, Store Size, Suggested Offer, Products, Median Price, Tech Stack, Status, First Scanned, Scanned At. There's one row per store, so a store never appears twice even if you scan it again. The file is UTF-8 with a BOM, so Excel opens accented characters correctly.
 
 ## Estimated sales and suggested offer
 
@@ -111,7 +112,16 @@ For each store, the scanner fetches:
 
 Emails are found in plain text, in `mailto:` links, behind HTML entities and escapes (`&#64;`, `%40`, `@`), in Cloudflare-protected addresses, and in forms like `name [at] brand [dot] com`. Obvious junk is dropped: image filenames like `logo@2x.png`, placeholder domains (example.com, yourdomain.com), vendor domains (sentry, wixpress, shopify.com) and hash-like addresses.
 
-Phone numbers come only from `tel:` links, because free-text numbers produce too many false matches.
+Phone numbers come from four places, most reliable first:
+
+1. **Call links** (`tel:`) on any page.
+2. **Site data**: the `telephone` field in the store's schema.org data.
+3. **WhatsApp** links (`wa.me/…`, `api.whatsapp.com/send?phone=…`), marked "WhatsApp".
+4. **Page text**, only when the number follows a label such as "Phone:", "Tel", "Call us at", "Mobile" or "WhatsApp". Unlabelled numbers are ignored, because order numbers, dates and years cause false matches.
+
+The same number found in several places is merged, keeping the version with the country code. The first one is marked **best to call**. It's shown right under the best email in the popup, in a Phone column in both dashboard tables (click to call), and in the CSV.
+
+For cold-call lists, switch on **Has phone number** in the dashboard filter, then Export CSV.
 
 ## Email scores and tags
 
@@ -171,7 +181,8 @@ shopify-lead-finder/
 │   ├── scanner.js    scanning, extraction, scoring (no DOM, runs in Node too)
 │   ├── storage.js    chrome.storage.local helpers
 │   ├── csv.js        CSV export
-│   ├── filters.js    email tag and store size filters (tables + export)
+│   ├── filters.js    email tag, store size and phone filters (tables + export)
+│   ├── history.js    "already scanned" lookups from saved leads + scan history
 │   ├── sales.js      store size / sales estimate from public signals
 │   ├── ui.js         shared DOM helpers and icons
 │   └── theme.css     shared design tokens (light + dark)

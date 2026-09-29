@@ -218,8 +218,8 @@ test('csv escaping', () => {
     },
   ]);
   const [header, row] = csv.trim().split('\r\n');
-  assert.equal(header.split(',').length, 23);
-  assert.ok(row.startsWith('"Glow, Co",https://brand.com,yes,,a@brand.com,business,"a@brand.com; b@brand.com"'));
+  assert.equal(header.split(',').length, 26);
+  assert.ok(row.startsWith('"Glow, Co",https://brand.com,yes,,a@brand.com,business,,"a@brand.com; b@brand.com"'));
 });
 
 /* ---------------------------- scanStore end to end ---------------------------- */
@@ -408,7 +408,7 @@ test('tag filter keeps matching emails and re-picks the best', () => {
   assert.equal(applyTagFilter(lead, new Set(['no-reply'])).bestEmail, null);
 
   const [, row] = leadsToCsv([f]).trim().split('\r\n');
-  assert.ok(row.includes(',shop@brand.com,store contact,shop@brand.com,'), row);
+  assert.ok(row.includes(',shop@brand.com,store contact,,shop@brand.com,'), row);
   assert.ok(!row.includes('info@brand.com'));
 });
 
@@ -531,4 +531,88 @@ test('scanStore adds a sales estimate for Shopify stores and exports it', async 
 
   const plain = await scanStore('plain.com', { fetchImpl: mockFetch({ '/': { body: '<title>Plain</title>' } }) });
   assert.equal(plain.sales, null);
+});
+
+/* ------------------------------ phones ------------------------------ */
+
+import { extractPhoneDetails, normalizePhone } from '../lib/scanner.js';
+import { buildScanIndex, isAlreadyScanned, describePrevious } from '../lib/history.js';
+
+test('normalizePhone rejects dates, year ranges and junk', () => {
+  assert.equal(normalizePhone('+1 (555) 201-8890'), '+15552018890');
+  assert.equal(normalizePhone('0044 20 7946 0000'), '+442079460000');
+  assert.equal(normalizePhone('2019-2024'), null);
+  assert.equal(normalizePhone('12/05/2024'), null);
+  assert.equal(normalizePhone('1111111111'), null);
+  assert.equal(normalizePhone('12345'), null);
+});
+
+test('extractPhoneDetails: tel links, schema, WhatsApp and labelled text', () => {
+  const pages = [
+    {
+      path: '/',
+      html: `<script type="application/ld+json">{"@type":"Organization","telephone":"+1-555-300-4000"}</script>
+        <footer>© 2019-2024 Brand. <a href="https://wa.me/15557778888">Chat</a></footer>`,
+    },
+    {
+      path: '/pages/contact',
+      html: `<p>Phone: (555) 300-4000</p><p>Call us at +44 20 7946 0000 Mon–Fri</p>
+        <a href="tel:+15551112222">Call</a><p>Order #1234567 shipped 12/05/2024</p>`,
+    },
+  ];
+  const d = extractPhoneDetails(pages);
+  assert.deepEqual(
+    d.map((x) => [x.phone, x.types]),
+    [
+      ['+15551112222', ['call link']],
+      ['+15553004000', ['site data', 'page text']],
+      ['+15557778888', ['WhatsApp']],
+      ['+442079460000', ['page text']],
+    ]
+  );
+});
+
+test('scanStore returns bestPhone and whatsapp', async () => {
+  const res = await scanStore('callme.com', {
+    fetchImpl: mockFetch({
+      '/': { body: '<title>Call Me</title><a href="https://api.whatsapp.com/send?phone=447700900123">WA</a>' },
+      '/policies/contact-information': { body: '<p>Phone number: +1 555 010 7788</p><p>Email: hi@callme.com</p>' },
+    }),
+  });
+  assert.equal(res.bestPhone, '+447700900123');
+  assert.equal(res.whatsapp, '+447700900123');
+  assert.deepEqual(res.phones, ['+447700900123', '+15550107788']);
+  const row = leadsToCsv([res]).trim().split('\r\n')[1];
+  assert.ok(row.includes(',hi@callme.com,store contact,+447700900123,hi@callme.com,"+447700900123; +15550107788",+447700900123,'), row);
+});
+
+/* ------------------------------ scan history ------------------------------ */
+
+test('scan index merges saved leads and history', () => {
+  const leads = {
+    'https://www.brand.com': { url: 'https://www.brand.com', input: 'brand.com', status: 'ok', isShopify: true, scannedAt: '2026-09-20T10:00:00Z', firstScannedAt: '2026-09-01T10:00:00Z' },
+  };
+  const history = {
+    'https://brand.com': { url: 'https://www.brand.com', firstScannedAt: '2026-09-01T10:00:00Z', lastScannedAt: '2026-09-20T10:00:00Z', count: 3, status: 'ok', isShopify: true },
+    'https://plain.com': { url: 'https://plain.com', firstScannedAt: '2026-09-10T10:00:00Z', lastScannedAt: '2026-09-10T10:00:00Z', count: 1, status: 'ok', isShopify: false },
+    'https://down.com': { url: 'https://down.com', firstScannedAt: '2026-09-10T10:00:00Z', lastScannedAt: '2026-09-10T10:00:00Z', count: 1, status: 'error', error: 'Timed out after 12s' },
+  };
+  const index = buildScanIndex(leads, history);
+  const brand = index.get('https://brand.com');
+  assert.equal(brand.saved, true, 'typed origin maps to the saved lead');
+  assert.equal(brand.count, 3);
+  assert.ok(isAlreadyScanned(index.get('https://www.brand.com')));
+  assert.ok(isAlreadyScanned(index.get('https://plain.com')), 'non-Shopify scans count too');
+  assert.equal(isAlreadyScanned(index.get('https://down.com')), false, 'failed scans are retried');
+  assert.equal(isAlreadyScanned(index.get('https://new.com')), false);
+  assert.match(describePrevious(index.get('https://plain.com')), /Scanned .*2026 · not saved \(not Shopify\)/);
+  assert.match(describePrevious(brand), /3 times, first on .* · saved as a lead/);
+});
+
+test('has-phone filter', () => {
+  const withPhone = { emails: [], phones: ['+15550001111'], bestPhone: '+15550001111' };
+  const without = { emails: [], phones: [] };
+  const f = { tags: new Set(PRESETS.all), sizes: new Set(SIZE_ORDER), phoneOnly: true };
+  assert.ok(applyFilters(withPhone, f));
+  assert.equal(applyFilters(without, f), null);
 });

@@ -2,7 +2,7 @@
  * Email tag filter shared by the dashboard tables and the CSV export.
  */
 
-import { TAGS, TAG_ORDER } from './scanner.js';
+import { TAGS, TAG_ORDER, leadBestPhone } from './scanner.js';
 import { SIZE_ORDER, leadTier } from './sales.js';
 
 /** One-click tag selections. */
@@ -50,13 +50,14 @@ export function isSizeFilterActive(sizes) {
 }
 
 /**
- * Apply both the store-size filter and the email tag filter.
+ * Apply the phone, store-size and email tag filters.
  *
  * @param {object} lead
- * @param {{ tags: Set<string>, sizes: Set<string> }} f
+ * @param {{ tags: Set<string>, sizes: Set<string>, phoneOnly?: boolean }} f
  * @returns {object|null} null when the lead is filtered out.
  */
-export function applyFilters(lead, { tags, sizes }) {
+export function applyFilters(lead, { tags, sizes, phoneOnly = false }) {
+  if (phoneOnly && !leadBestPhone(lead)) return null;
   if (isSizeFilterActive(sizes) && !sizes.has(leadTier(lead))) return null;
   return applyTagFilter(lead, tags);
 }

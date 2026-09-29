@@ -1,7 +1,18 @@
-import { scanStore, parseUrlList, normalizeInput, rescoreLead, TAG_ORDER } from './lib/scanner.js';
+import { scanStore, parseUrlList, rescoreLead, leadBestPhone, TAG_ORDER } from './lib/scanner.js';
 import { PRESETS, isFilterActive, isSizeFilterActive, applyFilters } from './lib/filters.js';
 import { SIZE_ORDER, SIZE_TIERS, tierLabel } from './lib/sales.js';
-import { getLeads, saveLeads, deleteLead, clearLeads, onLeadsChanged } from './lib/storage.js';
+import {
+  getLeads,
+  saveLeads,
+  deleteLead,
+  clearLeads,
+  onLeadsChanged,
+  getHistory,
+  recordScans,
+  clearHistory,
+  onHistoryChanged,
+} from './lib/storage.js';
+import { buildScanIndex, isAlreadyScanned, describePrevious, formatDate } from './lib/history.js';
 import { downloadCsv } from './lib/csv.js';
 import { h, copyText, copyButton, toast, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
@@ -32,6 +43,7 @@ let pendingSaves = [];
 let flushTimer = null;
 let flushing = Promise.resolve();
 
+/** Queue a finished scan: it's added to the scan history, and saved as a lead if marked "saved". */
 function queueSave(entry) {
   pendingSaves.push(entry);
   if (!flushTimer) flushTimer = setTimeout(flushSaves, FLUSH_MS);
@@ -44,15 +56,33 @@ function flushSaves() {
   pendingSaves = [];
   if (!batch.length) return flushing;
   flushing = flushing.then(async () => {
+    const toSave = batch.filter((e) => e.saveState === 'saved');
     try {
-      await saveLeads(batch.map((e) => e.res));
+      if (toSave.length) await saveLeads(toSave.map((e) => e.res));
     } catch {
-      for (const e of batch) e.saveState = 'save-failed';
-      toast(`Couldn't save ${batch.length} lead${batch.length === 1 ? '' : 's'}`);
+      for (const e of toSave) e.saveState = 'save-failed';
+      toast(`Couldn't save ${toSave.length} lead${toSave.length === 1 ? '' : 's'}`);
       renderResults();
+    }
+    try {
+      await recordScans(batch.map((e) => ({ result: e.res, origin: e.origin })));
+    } catch {
+      /* history is a convenience */
     }
   });
   return flushing;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Scan history index                                                         */
+/* -------------------------------------------------------------------------- */
+
+let scanHistory = {};
+/** origin → previous scan, from saved leads + scan history. */
+let scanIndex = new Map();
+
+function rebuildIndex() {
+  scanIndex = buildScanIndex(savedLeads, scanHistory);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -87,13 +117,33 @@ function loadSizeFilter() {
 
 let sizeFilter = loadSizeFilter();
 
+const PHONE_KEY = 'slf.phoneOnly';
+let phoneOnly = false;
+try {
+  phoneOnly = localStorage.getItem(PHONE_KEY) === '1';
+} catch {
+  /* storage unavailable */
+}
+
+function setPhoneOnly(on) {
+  phoneOnly = on;
+  try {
+    localStorage.setItem(PHONE_KEY, on ? '1' : '0');
+  } catch {
+    /* storage unavailable */
+  }
+  renderFilterBar();
+  renderResults();
+  renderSaved();
+}
+
 /** Current filters, as passed to applyFilters(). */
 function filters() {
-  return { tags: tagFilter, sizes: sizeFilter };
+  return { tags: tagFilter, sizes: sizeFilter, phoneOnly };
 }
 
 function anyFilterActive() {
-  return isFilterActive(tagFilter) || isSizeFilterActive(sizeFilter);
+  return phoneOnly || isFilterActive(tagFilter) || isSizeFilterActive(sizeFilter);
 }
 
 function setSizeFilter(sizes) {
@@ -190,6 +240,15 @@ function renderFilterBar() {
   allSizes.addEventListener('click', () => setSizeFilter(SIZE_ORDER));
   $('sizePresets').replaceChildren(allSizes);
 
+  const phoneChip = h(
+    'button',
+    { type: 'button', class: 'chip', 'aria-pressed': String(phoneOnly), title: 'Only stores with a phone number, for cold calling' },
+    h('span', { class: 'chip-check', 'aria-hidden': 'true', text: phoneOnly ? '✓' : '' }),
+    'Has phone number'
+  );
+  phoneChip.addEventListener('click', () => setPhoneOnly(!phoneOnly));
+  $('contactChips').replaceChildren(phoneChip);
+
   $('filterNote').textContent = anyFilterActive()
     ? 'Stores that don’t match are hidden. Best email, copy and CSV export use only what’s selected.'
     : 'Showing everything. Switch tags or sizes off to narrow the tables and the CSV export.';
@@ -209,6 +268,8 @@ function updateUrlCount() {
   parts.push(`${origins.length} valid URL${origins.length === 1 ? '' : 's'}`);
   if (duplicates) parts.push(`${duplicates} duplicate${duplicates === 1 ? '' : 's'} removed`);
   if (invalid.length) parts.push(`${invalid.length} invalid (${invalid.slice(0, 3).join(', ')}${invalid.length > 3 ? '…' : ''})`);
+  const seen = origins.filter((o) => isAlreadyScanned(scanIndex.get(o))).length;
+  if (seen) parts.push(`${seen} already scanned${$('skipSaved').checked ? ' (will be skipped)' : ' (will be scanned again)'}`);
   $('urlCount').textContent = parts.join(' · ');
 }
 
@@ -278,9 +339,12 @@ function bestEmailCell(lead, { withTag = true } = {}) {
   return btn;
 }
 
-function statusCell(res, saveState) {
+function statusCell(res, saveState, previous) {
+  const before = previous
+    ? h('small', { class: 'status-prev', text: `Scanned before on ${formatDate(previous.lastScannedAt)}`, title: describePrevious(previous) })
+    : null;
   if (res.status === 'error') {
-    return h('span', { class: 'status status-error', text: res.error || 'Error' });
+    return h('span', { class: 'status status-error' }, res.error || 'Error', before);
   }
   const label = {
     saved: res.status === 'password_protected' ? 'Password protected · saved' : 'Saved',
@@ -288,7 +352,14 @@ function statusCell(res, saveState) {
     'save-failed': 'Scanned, save failed',
   }[saveState];
   const cls = saveState === 'saved' ? 'status-ok' : saveState === 'save-failed' ? 'status-error' : 'status-muted';
-  return h('span', { class: `status ${cls}`, text: label });
+  return h('span', { class: `status ${cls}` }, label, before);
+}
+
+/** Best phone as a click-to-call link. */
+function phoneCell(lead) {
+  const phone = leadBestPhone(lead);
+  if (!phone) return h('span', { class: 'muted', text: '—' });
+  return h('a', { class: 'phone-link', href: `tel:${phone}`, text: phone, title: 'Call' });
 }
 
 function detailRow(res, colSpan) {
@@ -316,11 +387,11 @@ function detailRow(res, colSpan) {
   );
 }
 
-function resultRows(orig, saveState) {
+function resultRows({ res: orig, saveState, previous }) {
   const res = applyFilters(orig, filters());
   if (!res) return [];
   const others = res.emails.filter((e) => e.email !== res.bestEmail).length;
-  const detail = res.emails.length ? detailRow(res, 8) : null;
+  const detail = res.emails.length ? detailRow(res, 9) : null;
   let expand = h('span', { class: 'muted', text: '0' });
   if (detail) {
     expand = h('button', {
@@ -358,9 +429,10 @@ function resultRows(orig, saveState) {
     ),
     h('td', {}, bestEmailCell(res)),
     h('td', {}, expand),
+    h('td', { class: 'nowrap' }, phoneCell(res)),
     h('td', {}, salesCell(res)),
     h('td', {}, socialLinks(res.socials) || h('span', { class: 'muted', text: '—' })),
-    h('td', {}, statusCell(res, saveState))
+    h('td', {}, statusCell(res, saveState, previous))
   );
   return detail ? [row, detail] : [row];
 }
@@ -372,7 +444,7 @@ function renderHiddenNote(el, hidden, noun) {
 
 /** Re-render the whole results table (after a filter change). */
 function renderResults() {
-  const rows = runResults.flatMap(({ res, saveState }) => resultRows(res, saveState));
+  const rows = runResults.flatMap((entry) => resultRows(entry));
   rows.forEach((r) => r.classList.remove('row-new'));
   $('resultsBody').replaceChildren(...rows);
   shownResults = runResults.filter(({ res }) => applyFilters(res, filters())).length;
@@ -383,7 +455,7 @@ function renderResults() {
 /** Add one finished store to the results table. */
 function addResult(entry) {
   runResults.push(entry);
-  const rows = resultRows(entry.res, entry.saveState);
+  const rows = resultRows(entry);
   $('resultsBody').append(...rows);
   if (rows.length) {
     shownResults++;
@@ -420,7 +492,7 @@ function renderProgress(stats, active) {
   $('bar').setAttribute('aria-valuenow', String(pct));
   let text = `${stats.done} of ${stats.total} scanned, ${stats.emails} email${stats.emails === 1 ? '' : 's'} found`;
   if (stats.failed) text += ` · ${stats.failed} failed`;
-  if (stats.skipped) text += ` · ${stats.skipped} skipped (already saved)`;
+  if (stats.skipped) text += ` · ${stats.skipped} skipped (already scanned)`;
   $('progressText').textContent = text;
 
   let side = '';
@@ -443,13 +515,19 @@ function renderRetry() {
   btn.textContent = `Retry failed (${failedOrigins.length})`;
 }
 
-function savedOriginSet(leads) {
-  const set = new Set(Object.keys(leads));
-  for (const l of Object.values(leads)) {
-    const n = normalizeInput(l.input || '');
-    if (n.ok) set.add(n.origin);
-  }
-  return set;
+/** List the stores skipped because they were already scanned, with dates. */
+function renderSkipped(list) {
+  const box = $('skipped');
+  box.hidden = !list.length;
+  if (!list.length) return;
+  const LIMIT = 500;
+  $('skippedSummary').textContent = `${list.length} store${list.length === 1 ? '' : 's'} skipped: already scanned`;
+  $('skippedList').replaceChildren(
+    ...list.slice(0, LIMIT).map(({ origin, prev }) =>
+      h('li', {}, h('span', { class: 'skipped-host', text: displayHost(origin) }), h('span', { class: 'muted', text: describePrevious(prev) }))
+    ),
+    list.length > LIMIT ? h('li', { class: 'muted', text: `…and ${list.length - LIMIT} more` }) : null
+  );
 }
 
 /** Errors worth a second try (not "not found" or "not a web page"). */
@@ -470,13 +548,21 @@ async function start(retryList) {
     return;
   }
 
+  // Fresh lookup, in case another tab or the popup scanned something meanwhile.
+  [savedLeads, scanHistory] = await Promise.all([getLeads(), getHistory()]);
+  rebuildIndex();
   let queue = origins;
-  let skipped = 0;
+  const skippedList = [];
   if ($('skipSaved').checked) {
-    const saved = savedOriginSet(await getLeads());
-    queue = origins.filter((o) => !saved.has(o));
-    skipped = origins.length - queue.length;
+    queue = [];
+    for (const o of origins) {
+      const prev = scanIndex.get(o);
+      if (isAlreadyScanned(prev)) skippedList.push({ origin: o, prev });
+      else queue.push(o);
+    }
   }
+  const skipped = skippedList.length;
+  renderSkipped(skippedList);
 
   $('run').hidden = false;
   runResults = [];
@@ -492,7 +578,7 @@ async function start(retryList) {
   renderProgress(stats, active);
 
   if (!queue.length) {
-    $('progressText').textContent = `All ${skipped} store${skipped === 1 ? ' is' : 's are'} already saved. Uncheck “Skip stores already saved” to re-scan.`;
+    $('progressText').textContent = `All ${skipped} store${skipped === 1 ? ' was' : 's were'} already scanned. Uncheck “Skip stores already scanned” to scan again.`;
     return;
   }
 
@@ -511,7 +597,8 @@ async function start(retryList) {
       active.delete(url);
       if (signal.aborted) return; // stopped mid-scan: drop the partial result
 
-      const entry = { res, saveState: 'error' };
+      const previous = scanIndex.get(url) || scanIndex.get(res.url);
+      const entry = { res, saveState: 'error', origin: url, previous };
       if (res.status === 'error') {
         stats.failed++;
         if (isRetryable(res)) failedOrigins.push(res.url || url);
@@ -519,8 +606,8 @@ async function start(retryList) {
         entry.saveState = 'not-shopify';
       } else {
         entry.saveState = 'saved';
-        queueSave(entry);
       }
+      queueSave(entry);
       stats.done++;
       stats.emails += res.emails.length;
       addResult(entry);
@@ -607,12 +694,17 @@ function savedRow(lead) {
     h('td', {}, best ? tagBadge(best.tag) : h('span', { class: 'muted', text: '—' })),
     h('td', { title: (lead.emails || []).map((e) => e.email).join('\n') }, String((lead.emails || []).length)),
     h('td', {}, salesCell(lead)),
-    h('td', { class: 'nowrap' }, (lead.phones || [])[0] || h('span', { class: 'muted', text: '—' })),
+    h('td', { class: 'nowrap' }, phoneCell(lead)),
     h('td', {}, socialLinks(lead.socials) || h('span', { class: 'muted', text: '—' })),
     h(
       'td',
-      { class: 'nowrap muted', title: scanned ? scanned.toLocaleString() : '' },
-      scanned ? scanned.toLocaleDateString() : '—'
+      {
+        class: 'nowrap muted',
+        title: scanned
+          ? `Last scanned ${scanned.toLocaleString()}${lead.firstScannedAt ? `\nFirst found ${new Date(lead.firstScannedAt).toLocaleString()}` : ''}`
+          : '',
+      },
+      scanned ? formatDate(lead.scannedAt) : '—'
     ),
     h('td', {}, del)
   );
@@ -716,11 +808,24 @@ async function init() {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !$('startBtn').disabled) start();
   });
 
+  onHistoryChanged((history) => {
+    scanHistory = history;
+    rebuildIndex();
+    updateUrlCount();
+  });
+  $('skipSaved').addEventListener('change', updateUrlCount);
+  $('clearHistoryBtn').addEventListener('click', async () => {
+    if (!confirm('Forget which stores were scanned? Saved leads are kept, and stores saved as leads still count as scanned.')) return;
+    await clearHistory();
+    toast('Scan history cleared');
+  });
   onLeadsChanged((leads) => {
     savedLeads = leads;
+    rebuildIndex();
     scheduleRenderSaved();
   });
-  savedLeads = await getLeads();
+  [savedLeads, scanHistory] = await Promise.all([getLeads(), getHistory()]);
+  rebuildIndex();
   renderFilterBar();
   renderSaved();
   updateUrlCount();
