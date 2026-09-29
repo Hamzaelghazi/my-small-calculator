@@ -25,7 +25,7 @@
       <div class="card-head">
         <div>
           <h1 id="bulkTitle">Bulk scanner</h1>
-          <p class="lede">Paste store URLs, one per line or separated by commas. Each result is saved as soon as it finishes, so you can close this tab at any time.</p>
+          <p class="lede">Paste up to thousands of store URLs, one per line or separated by commas. Results are saved every couple of seconds, so closing the tab loses almost nothing: open it again and press Start to carry on where you left off.</p>
         </div>
       </div>
 
@@ -39,10 +39,12 @@
         <div class="options">
           <fieldset class="field">
             <legend>Stores at a time</legend>
+            <p class="hint" id="speedHint">10 is a safe default. 20–30 is faster, but some stores may block you (shown as failed, and you can retry them).</p>
             <div class="segmented" role="radiogroup">
-              <label><input type="radio" name="concurrency" value="2"><span>2</span></label>
-              <label><input type="radio" name="concurrency" value="4" checked><span>4</span></label>
-              <label><input type="radio" name="concurrency" value="6"><span>6</span></label>
+              <label><input type="radio" name="concurrency" value="4"><span>4</span></label>
+              <label><input type="radio" name="concurrency" value="10" checked><span>10</span></label>
+              <label><input type="radio" name="concurrency" value="20"><span>20</span></label>
+              <label><input type="radio" name="concurrency" value="30"><span>30</span></label>
             </div>
           </fieldset>
 
@@ -66,6 +68,7 @@
             <button type="button" id="startBtn" class="btn btn-primary">Start scan</button>
             <button type="button" id="stopBtn" class="btn" disabled>Stop</button>
           </div>
+          <button type="button" id="retryBtn" class="btn btn-small" hidden>Retry failed (0)</button>
         </div>
       </div>
 
@@ -137,6 +140,7 @@
         </table>
       </div>
       <p class="hint hidden-note" id="savedHidden" hidden></p>
+      <p class="hint hidden-note" id="savedMore" hidden></p>
       <div class="empty" id="savedEmpty" hidden>
         <h3>No saved leads yet</h3>
         <p>Scan a list above, or open a store and click “Save lead” in the extension popup.</p>

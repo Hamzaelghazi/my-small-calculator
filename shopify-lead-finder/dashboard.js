@@ -1,6 +1,6 @@
 import { scanStore, parseUrlList, normalizeInput, rescoreLead, TAG_ORDER } from './lib/scanner.js';
 import { PRESETS, isFilterActive, applyTagFilter } from './lib/filters.js';
-import { getLeads, saveLead, deleteLead, clearLeads, onLeadsChanged } from './lib/storage.js';
+import { getLeads, saveLeads, deleteLead, clearLeads, onLeadsChanged } from './lib/storage.js';
 import { downloadCsv } from './lib/csv.js';
 import { h, copyText, copyButton, toast, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
@@ -10,6 +10,49 @@ let controller = null;
 let savedLeads = {};
 /** Results of the current bulk run, so the table can re-render when the filter changes. */
 let runResults = [];
+/** How many of runResults pass the email filter (kept incrementally for big runs). */
+let shownResults = 0;
+/** Origins that failed in the last run, for "Retry failed". */
+let failedOrigins = [];
+
+/** Saved-leads rows rendered at once. Search narrows it; export and copy always use every match. */
+const SAVED_ROW_LIMIT = 300;
+const DRAFT_KEY = 'slf.urlDraft';
+
+/* -------------------------------------------------------------------------- */
+/* Batched saving                                                             */
+/* -------------------------------------------------------------------------- */
+
+// Saving each result on its own rewrites the whole leads object every time,
+// which gets slow with hundreds of leads. Results are queued and written in
+// one batch every FLUSH_MS instead.
+const FLUSH_MS = 1500;
+let pendingSaves = [];
+let flushTimer = null;
+let flushing = Promise.resolve();
+
+function queueSave(entry) {
+  pendingSaves.push(entry);
+  if (!flushTimer) flushTimer = setTimeout(flushSaves, FLUSH_MS);
+}
+
+function flushSaves() {
+  clearTimeout(flushTimer);
+  flushTimer = null;
+  const batch = pendingSaves;
+  pendingSaves = [];
+  if (!batch.length) return flushing;
+  flushing = flushing.then(async () => {
+    try {
+      await saveLeads(batch.map((e) => e.res));
+    } catch {
+      for (const e of batch) e.saveState = 'save-failed';
+      toast(`Couldn't save ${batch.length} lead${batch.length === 1 ? '' : 's'}`);
+      renderResults();
+    }
+  });
+  return flushing;
+}
 
 /* -------------------------------------------------------------------------- */
 /* Email tag filter                                                           */
@@ -245,19 +288,21 @@ function renderResults() {
   const rows = runResults.flatMap(({ res, saveState }) => resultRows(res, saveState));
   rows.forEach((r) => r.classList.remove('row-new'));
   $('resultsBody').replaceChildren(...rows);
-  const shown = runResults.filter(({ res }) => applyTagFilter(res, tagFilter)).length;
-  $('resultsWrap').hidden = shown === 0;
-  renderHiddenNote($('resultsHidden'), runResults.length - shown, 'store');
+  shownResults = runResults.filter(({ res }) => applyTagFilter(res, tagFilter)).length;
+  $('resultsWrap').hidden = shownResults === 0;
+  renderHiddenNote($('resultsHidden'), runResults.length - shownResults, 'store');
 }
 
 /** Add one finished store to the results table. */
-function addResult(res, saveState) {
-  runResults.push({ res, saveState });
-  const rows = resultRows(res, saveState);
+function addResult(entry) {
+  runResults.push(entry);
+  const rows = resultRows(entry.res, entry.saveState);
   $('resultsBody').append(...rows);
-  if (rows.length) $('resultsWrap').hidden = false;
-  const shown = runResults.filter((r) => applyTagFilter(r.res, tagFilter)).length;
-  renderHiddenNote($('resultsHidden'), runResults.length - shown, 'store');
+  if (rows.length) {
+    shownResults++;
+    $('resultsWrap').hidden = false;
+  }
+  renderHiddenNote($('resultsHidden'), runResults.length - shownResults, 'store');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -268,10 +313,18 @@ function setRunning(running) {
   $('startBtn').disabled = running;
   $('stopBtn').disabled = !running;
   $('urls').disabled = running;
+  $('retryBtn').disabled = running;
   document.querySelectorAll('input[name="concurrency"], #shopifyOnly, #skipSaved').forEach((el) => {
     el.disabled = running;
   });
   $('startBtn').textContent = running ? 'Scanning…' : 'Start scan';
+}
+
+function formatDuration(ms) {
+  const min = Math.round(ms / 60000);
+  if (min < 1) return 'under a minute';
+  if (min < 60) return `${min} min`;
+  return `${Math.floor(min / 60)} h ${min % 60} min`;
 }
 
 function renderProgress(stats, active) {
@@ -279,9 +332,28 @@ function renderProgress(stats, active) {
   $('barFill').style.width = `${pct}%`;
   $('bar').setAttribute('aria-valuenow', String(pct));
   let text = `${stats.done} of ${stats.total} scanned, ${stats.emails} email${stats.emails === 1 ? '' : 's'} found`;
+  if (stats.failed) text += ` · ${stats.failed} failed`;
   if (stats.skipped) text += ` · ${stats.skipped} skipped (already saved)`;
   $('progressText').textContent = text;
-  $('activeText').textContent = active && active.size ? `Scanning ${[...active].map(displayHost).join(', ')}` : '';
+
+  let side = '';
+  if (active && active.size) {
+    const hosts = [...active].map(displayHost);
+    side = `Scanning ${hosts.slice(0, 3).join(', ')}${hosts.length > 3 ? ` +${hosts.length - 3} more` : ''}`;
+    // Estimate after a few stores so the first slow ones don't skew it.
+    if (stats.done >= 5 && stats.done < stats.total) {
+      const perStore = (Date.now() - stats.startedAt) / stats.done;
+      const left = formatDuration(perStore * (stats.total - stats.done));
+      side += left === 'under a minute' ? ' · under a minute left' : ` · about ${left} left`;
+    }
+  }
+  $('activeText').textContent = side;
+}
+
+function renderRetry() {
+  const btn = $('retryBtn');
+  btn.hidden = failedOrigins.length === 0;
+  btn.textContent = `Retry failed (${failedOrigins.length})`;
 }
 
 function savedOriginSet(leads) {
@@ -293,8 +365,18 @@ function savedOriginSet(leads) {
   return set;
 }
 
-async function start() {
-  const { origins } = parseUrlList($('urls').value);
+/** Errors worth a second try (not "not found" or "not a web page"). */
+function isRetryable(res) {
+  return res.status === 'error' && !/not found|not a web page|invalid url/i.test(res.error || '');
+}
+
+/**
+ * Scan a list of stores with a worker pool.
+ *
+ * @param {string[]} [retryList] Origins to retry; defaults to the URL box.
+ */
+async function start(retryList) {
+  const origins = Array.isArray(retryList) ? retryList : parseUrlList($('urls').value).origins;
   if (!origins.length) {
     toast('Paste at least one store URL');
     $('urls').focus();
@@ -311,11 +393,14 @@ async function start() {
 
   $('run').hidden = false;
   runResults = [];
+  shownResults = 0;
+  failedOrigins = [];
+  renderRetry();
   $('resultsBody').replaceChildren();
   $('resultsWrap').hidden = true;
   renderHiddenNote($('resultsHidden'), 0, 'store');
 
-  const stats = { total: queue.length, done: 0, emails: 0, skipped };
+  const stats = { total: queue.length, done: 0, emails: 0, failed: 0, skipped, startedAt: Date.now() };
   const active = new Set();
   renderProgress(stats, active);
 
@@ -339,34 +424,35 @@ async function start() {
       active.delete(url);
       if (signal.aborted) return; // stopped mid-scan: drop the partial result
 
-      let saveState = 'error';
-      if (res.status !== 'error') {
-        if (shopifyOnly && !res.isShopify) {
-          saveState = 'not-shopify';
-        } else {
-          try {
-            await saveLead(res);
-            saveState = 'saved';
-          } catch {
-            saveState = 'save-failed';
-          }
-        }
+      const entry = { res, saveState: 'error' };
+      if (res.status === 'error') {
+        stats.failed++;
+        if (isRetryable(res)) failedOrigins.push(res.url || url);
+      } else if (shopifyOnly && !res.isShopify) {
+        entry.saveState = 'not-shopify';
+      } else {
+        entry.saveState = 'saved';
+        queueSave(entry);
       }
       stats.done++;
       stats.emails += res.emails.length;
-      addResult(res, saveState);
+      addResult(entry);
       renderProgress(stats, active);
     },
     signal
   );
 
+  await flushSaves();
   const wasStopped = signal.aborted;
   controller = null;
   setRunning(false);
   renderProgress(stats, null);
+  renderRetry();
+  const took = formatDuration(Date.now() - stats.startedAt);
   if (wasStopped) {
     $('progressText').textContent += ' · Stopped';
   } else {
+    $('activeText').textContent = `Finished in ${took}`;
     toast(`Done: ${stats.done} store${stats.done === 1 ? '' : 's'} scanned`);
   }
 }
@@ -449,7 +535,13 @@ function renderSaved() {
   const rows = visibleLeads();
   $('savedCount').textContent = String(all);
   $('savedCountTop').textContent = `${all} saved lead${all === 1 ? '' : 's'}`;
-  $('savedBody').replaceChildren(...rows.map(savedRow));
+  $('savedBody').replaceChildren(...rows.slice(0, SAVED_ROW_LIMIT).map(savedRow));
+  const more = rows.length - SAVED_ROW_LIMIT;
+  $('savedMore').hidden = more <= 0;
+  $('savedMore').textContent =
+    more > 0
+      ? `Showing the newest ${SAVED_ROW_LIMIT} of ${rows.length}. Search to narrow the list. Export CSV and Copy all best emails include all ${rows.length}.`
+      : '';
 
   const empty = $('savedEmpty');
   if (!all) {
@@ -500,8 +592,30 @@ async function clearAll() {
 /* -------------------------------------------------------------------------- */
 
 async function init() {
-  $('urls').addEventListener('input', updateUrlCount);
-  $('startBtn').addEventListener('click', start);
+  try {
+    const draft = localStorage.getItem(DRAFT_KEY);
+    if (draft && !$('urls').value) $('urls').value = draft;
+  } catch {
+    /* storage unavailable */
+  }
+  let draftTimer;
+  $('urls').addEventListener('input', () => {
+    updateUrlCount();
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => {
+      try {
+        localStorage.setItem(DRAFT_KEY, $('urls').value);
+      } catch {
+        /* too big or unavailable: not critical */
+      }
+    }, 400);
+  });
+  $('retryBtn').addEventListener('click', () => start([...failedOrigins]));
+  window.addEventListener('pagehide', () => flushSaves());
+  window.addEventListener('beforeunload', (e) => {
+    if (controller) e.preventDefault();
+  });
+  $('startBtn').addEventListener('click', () => start());
   $('stopBtn').addEventListener('click', stop);
   $('search').addEventListener('input', scheduleRenderSaved);
   $('exportBtn').addEventListener('click', () => {

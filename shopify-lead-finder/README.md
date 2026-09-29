@@ -29,12 +29,25 @@ Click **Open bulk scanner** in the popup. It opens a full tab.
 
 1. Paste store URLs into the box, one per line or comma separated. Bare domains (`brand.com`) are fine. Duplicates are removed, and the count under the box shows how many URLs are valid.
 2. Pick your options:
-   - **Stores at a time** (2, 4 or 6, default 4): how many stores are scanned in parallel.
+   - **Stores at a time** (4, 10, 20 or 30, default 10): how many stores are scanned in parallel. 10 is safe. 20–30 is faster, but more stores may block you with "Blocked by the site (429)".
    - **Shopify stores only**: non-Shopify results still show in the table but aren't saved.
    - **Skip stores already saved**: don't re-scan stores that are already in your saved leads. Uncheck it to refresh them.
 3. Click **Start scan** (or press Ctrl/⌘ + Enter in the box). Rows appear as each store finishes. Click **Stop** to cancel. In-flight requests are aborted immediately.
-4. Each finished store is **saved automatically**, so closing the tab loses nothing. Stores that failed (timeout, blocked, not found) are shown in the table but not saved.
-5. In the results table, click a best email to copy it. Click the **+N** button to see every email found for that store.
+4. Finished stores are **saved automatically** in batches every 1.5 seconds, so closing the tab loses at most the last couple of seconds. Stores that failed (timeout, blocked, not found) are shown in the table but not saved.
+5. When the run ends, **Retry failed (N)** scans the stores that timed out or were blocked again. Try it a few minutes later, or at a lower speed.
+6. In the results table, click a best email to copy it. Click the **+N** button to see every email found for that store.
+
+### Scanning 1000+ stores
+
+Paste the whole list at once. There's no limit on list size.
+
+- **Speed:** each store takes a few seconds, since up to 14 pages are checked. At 20 stores at a time, 1000 stores usually take about 10–25 minutes, depending on how fast the stores respond. The progress line shows how many are done, how many failed, and an estimate of the time left.
+- **Leave the tab open.** It can be in the background, but it has to stay open. Don't let the computer go to sleep.
+- **Resume:** your URL list is remembered, and **Skip stores already saved** is on by default. If the tab closes or you press Stop, open the bulk scanner again and press **Start scan** to carry on with the stores not saved yet. Non-Shopify stores and failed stores aren't saved, so those are checked again.
+- **Blocked stores:** hitting many stores quickly can get you rate-limited (429). Use **Retry failed** afterwards, or lower the speed.
+- **Storage:** the extension has unlimited local storage, so tens of thousands of leads fit. The saved-leads table shows the newest 300. Search to find others. Export CSV and Copy all best emails always include every matching lead.
+
+The scanning itself is not "all 1000 at the same instant". That would mean over 10,000 requests at once, which Chrome caps and stores would block. A pool of 10–30 workers is the fastest setup that stays reliable.
 
 ### Email filter
 
@@ -109,6 +122,7 @@ Leads saved by an earlier version are re-scored automatically with the current r
 - **Headless or custom storefronts** (Hydrogen and similar) may not carry the usual Shopify markers, so they can show as "Not Shopify".
 - Each request times out after 12 seconds and reads at most about 2MB of a page.
 - The popup scan stops if you close the popup. Use the bulk scanner for long lists.
+- The bulk scan stops if you close the dashboard tab or the computer sleeps. Press Start again to resume.
 - Leads live in `chrome.storage.local` on this computer only. Export CSV to back them up.
 
 Respect privacy and anti-spam law (GDPR, CAN-SPAM, CASL) when you contact the people you find. Send relevant, one-to-one B2B outreach with a clear opt-out.
