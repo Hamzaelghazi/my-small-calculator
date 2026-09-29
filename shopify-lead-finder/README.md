@@ -41,7 +41,7 @@ Click **Open bulk scanner** in the popup. It opens a full tab.
 
 Paste the whole list at once. There's no limit on list size.
 
-- **Speed:** each store takes a few seconds, since up to 14 pages are checked. At 20 stores at a time, 1000 stores usually take about 10–25 minutes, depending on how fast the stores respond. The progress line shows how many are done, how many failed, and an estimate of the time left.
+- **Speed:** each store takes a few seconds, since up to 16 pages are checked. At 20 stores at a time, 1000 stores usually take about 10–25 minutes, depending on how fast the stores respond. The progress line shows how many are done, how many failed, and an estimate of the time left.
 - **Leave the tab open.** It can be in the background, but it has to stay open. Don't let the computer go to sleep.
 - **Resume:** your URL list is remembered, and **Skip stores already saved** is on by default. If the tab closes or you press Stop, open the bulk scanner again and press **Start scan** to carry on with the stores not saved yet. Non-Shopify stores and failed stores aren't saved, so those are checked again.
 - **Blocked stores:** hitting many stores quickly can get you rate-limited (429). Use **Retry failed** afterwards, or lower the speed.
@@ -67,7 +67,38 @@ The lower section lists every saved lead, including ones saved from the popup.
 - **Copy all best emails** copies the best email from each visible lead, one per line.
 - **Delete** removes one lead. **Clear all** removes all of them after you confirm.
 
-CSV columns: Store Name, URL, Shopify, MyShopify Domain, Best Email, Best Email Tag, All Emails, Phones, Instagram, Facebook, TikTok, LinkedIn, X, YouTube, Pinterest, Status, Scanned At. The file is UTF-8 with a BOM, so Excel opens accented characters correctly.
+CSV columns: Store Name, URL, Shopify, MyShopify Domain, Best Email, Best Email Tag, All Emails, Phones, Instagram, Facebook, TikTok, LinkedIn, X, YouTube, Pinterest, Est. Monthly Sales, Store Size, Suggested Offer, Products, Median Price, Tech Stack, Status, Scanned At. The file is UTF-8 with a BOM, so Excel opens accented characters correctly.
+
+## Estimated sales and suggested offer
+
+Every Shopify store gets a **store size** with an estimated monthly sales range and a suggested offer level, so you can match your offer to the prospect. It's shown in the popup ("Estimated size"), in both dashboard tables ("Est. sales"; hover for the signals), and in the CSV.
+
+**This is a rough estimate, not real sales data.** No store publishes its revenue. The estimate adds up public signals:
+
+| Signal | Points |
+| --- | --- |
+| Products in the catalog (from `/meta.json`): 10+ / 50+ / 200+ / 1000+ | +1 / +2 / +3 / +4 |
+| Median product price (from `/products.json`): $50+ / $150+ | +1 / +2 |
+| 5+ products updated in the last 30 days | +1 |
+| Premium apps: Attentive, Postscript, Yotpo, Okendo, Gorgias, Rebuy, Recharge | +1 each, up to +4 |
+| Email marketing (Klaviyo, Omnisend) | +1 |
+| Reviews app (Judge.me, Loox, Stamped) | +1 |
+| Ad pixels (Meta, TikTok, Google Ads, Pinterest, Snap) | +1 each, up to +2 |
+| Buy now, pay later (Klarna, Afterpay, Affirm, Sezzle) | +1 |
+| Ships to 10+ / 50+ countries | +1 / +2 |
+| 3+ social profiles | +1 |
+
+| Score | Store size | Est. monthly sales | Suggested offer |
+| --- | --- | --- | --- |
+| 0–3 | Early | under $5k | Starter offer (low-ticket, DIY) |
+| 4–6 | Small | $5k–$25k | Growth offer (entry package) |
+| 7–9 | Mid-size | $25k–$100k | Core offer (done-for-you) |
+| 10–12 | Large | $100k–$500k | Premium offer (monthly retainer) |
+| 13+ | Enterprise | $500k+ | Enterprise offer (custom scope) |
+
+Use the **Store size** row in the dashboard filter to show and export only the sizes that fit one offer. For example, switch on only Mid-size and Large, then Export CSV. Leads that are "Unknown" have no estimate: they aren't Shopify stores, the scan failed or was password protected, or they were saved before this feature (scan them again to add it).
+
+Treat it as a way to sort a list, and check a store yourself before pitching a high-ticket offer. A store with a small catalog can still sell a lot, and a big catalog doesn't always mean big sales. Prices are in the store's own currency.
 
 ## What gets checked
 
@@ -76,6 +107,7 @@ For each store, the scanner fetches:
 - the homepage (redirects are followed, and the final address becomes the store's URL)
 - `/pages/contact`, `/pages/contact-us`, `/policies/contact-information`, `/policies/privacy-policy`, `/policies/terms-of-service`, `/policies/refund-policy`, `/policies/shipping-policy`, `/pages/about`, `/pages/about-us`, `/pages/faq`
 - up to 3 more links from the homepage whose address or text mentions contact, about, support or wholesale
+- for Shopify stores: `/meta.json` and `/products.json?limit=100` (public catalog data, for the size estimate)
 
 Emails are found in plain text, in `mailto:` links, behind HTML entities and escapes (`&#64;`, `%40`, `@`), in Cloudflare-protected addresses, and in forms like `name [at] brand [dot] com`. Obvious junk is dropped: image filenames like `logo@2x.png`, placeholder domains (example.com, yourdomain.com), vendor domains (sentry, wixpress, shopify.com) and hash-like addresses.
 
@@ -120,6 +152,7 @@ Leads saved by an earlier version are re-scored automatically with the current r
 - **Bot protection** (Cloudflare challenges, rate limits) can block a scan. It shows up as "Blocked by the site". Lower the concurrency and try again later.
 - **Password-protected stores** (not launched yet) show as "Store password protected". Only the password page is checked.
 - **Headless or custom storefronts** (Hydrogen and similar) may not carry the usual Shopify markers, so they can show as "Not Shopify".
+- Sales estimates are guesses from public signals, not revenue data. Some stores block `/products.json`, which lowers the confidence.
 - Each request times out after 12 seconds and reads at most about 2MB of a page.
 - The popup scan stops if you close the popup. Use the bulk scanner for long lists.
 - The bulk scan stops if you close the dashboard tab or the computer sleeps. Press Start again to resume.
@@ -138,7 +171,8 @@ shopify-lead-finder/
 │   ├── scanner.js    scanning, extraction, scoring (no DOM, runs in Node too)
 │   ├── storage.js    chrome.storage.local helpers
 │   ├── csv.js        CSV export
-│   ├── filters.js    email tag filter (tables + export)
+│   ├── filters.js    email tag and store size filters (tables + export)
+│   ├── sales.js      store size / sales estimate from public signals
 │   ├── ui.js         shared DOM helpers and icons
 │   └── theme.css     shared design tokens (light + dark)
 ├── icons/            16, 32, 48, 128 px

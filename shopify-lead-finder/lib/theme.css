@@ -272,3 +272,8 @@ a {
     border-right-color: var(--accent-text);
   }
 }
+
+.badge-size {
+  background: var(--surface);
+  color: var(--ink);
+}

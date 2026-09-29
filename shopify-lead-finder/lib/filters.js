@@ -3,6 +3,7 @@
  */
 
 import { TAGS, TAG_ORDER } from './scanner.js';
+import { SIZE_ORDER, leadTier } from './sales.js';
 
 /** One-click tag selections. */
 export const PRESETS = {
@@ -36,4 +37,26 @@ export function applyTagFilter(lead, tags) {
   if (!emails.length) return null;
   const best = emails.find((e) => e.score >= 0);
   return { ...lead, emails, bestEmail: best ? best.email : null };
+}
+
+/**
+ * True when at least one store size is switched off.
+ *
+ * @param {Set<string>} sizes Selected tier ids (see SIZE_ORDER).
+ * @returns {boolean}
+ */
+export function isSizeFilterActive(sizes) {
+  return SIZE_ORDER.some((t) => !sizes.has(t));
+}
+
+/**
+ * Apply both the store-size filter and the email tag filter.
+ *
+ * @param {object} lead
+ * @param {{ tags: Set<string>, sizes: Set<string> }} f
+ * @returns {object|null} null when the lead is filtered out.
+ */
+export function applyFilters(lead, { tags, sizes }) {
+  if (isSizeFilterActive(sizes) && !sizes.has(leadTier(lead))) return null;
+  return applyTagFilter(lead, tags);
 }

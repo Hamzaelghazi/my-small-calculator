@@ -17,7 +17,8 @@ import {
   rescoreLead,
 } from '../lib/scanner.js';
 import { leadsToCsv, csvCell } from '../lib/csv.js';
-import { applyTagFilter, isFilterActive, PRESETS } from '../lib/filters.js';
+import { applyTagFilter, isFilterActive, applyFilters, PRESETS } from '../lib/filters.js';
+import { detectApps, parseMeta, parseProducts, estimateSales, SIZE_ORDER } from '../lib/sales.js';
 
 /** Encode an address the way Cloudflare's email protection does. */
 function cfEncode(email, key = 0x5a) {
@@ -217,7 +218,7 @@ test('csv escaping', () => {
     },
   ]);
   const [header, row] = csv.trim().split('\r\n');
-  assert.equal(header.split(',').length, 17);
+  assert.equal(header.split(',').length, 23);
   assert.ok(row.startsWith('"Glow, Co",https://brand.com,yes,,a@brand.com,business,"a@brand.com; b@brand.com"'));
 });
 
@@ -427,4 +428,107 @@ test('rescoreLead upgrades leads saved by an older version', () => {
   assert.equal(r.emails[0].tag, 'store contact');
   assert.equal(r.emails[1].tag, 'business');
   assert.equal(rescoreLead({ emails: [] }).emails.length, 0);
+});
+
+/* ------------------------------ sales estimate ------------------------------ */
+
+test('detectApps finds marketing apps and pixels, not look-alike words', () => {
+  const html = `<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>
+    <script>fbq('init', '123');</script><script src="https://cdn.judge.me/widget.js"></script>
+    <script src="https://static.rechargecdn.com/x.js"></script><p>Rechargeable battery</p>`;
+  assert.deepEqual(detectApps(html).map((a) => a.name), ['Klaviyo', 'Recharge', 'Judge.me', 'Meta pixel']);
+  assert.deepEqual(detectApps('<p>A rechargeable lamp. We affirm quality.</p>'), []);
+});
+
+test('parseMeta and parseProducts', () => {
+  assert.deepEqual(parseMeta('{"published_products_count":312,"ships_to_countries":["US","CA","GB"],"currency":"USD"}'), {
+    productCount: 312,
+    countries: 3,
+    currency: 'USD',
+  });
+  assert.equal(parseMeta('<html>'), null);
+  const now = Date.parse('2026-09-01T00:00:00Z');
+  const products = JSON.stringify({
+    products: [
+      { updated_at: '2026-08-20T00:00:00Z', variants: [{ price: '20.00' }, { price: '25.00' }] },
+      { updated_at: '2026-01-01T00:00:00Z', variants: [{ price: '40.00' }] },
+      { updated_at: '2026-08-30T00:00:00Z', variants: [{ price: '0' }, { price: '60.00' }] },
+    ],
+  });
+  assert.deepEqual(parseProducts(products, now), { sampled: 3, medianPrice: 40, recentlyUpdated: 2 });
+  assert.equal(parseProducts('nope'), null);
+});
+
+test('estimateSales tiers go up with stronger signals', () => {
+  const tiny = estimateSales({ meta: { productCount: 6, countries: 1, currency: 'USD' }, products: { sampled: 6, medianPrice: 18, recentlyUpdated: 0 } });
+  assert.equal(tiny.tier, 'early');
+  assert.equal(tiny.confidence, 'medium');
+
+  const apps = (names) => detectApps(names);
+  const mid = estimateSales({
+    apps: apps('klaviyo judge.me fbq("init" ttq.load'),
+    meta: { productCount: 120, countries: 12, currency: 'USD' },
+    products: { sampled: 100, medianPrice: 55, recentlyUpdated: 2 },
+  });
+  assert.equal(mid.tier, 'mid', JSON.stringify(mid)); // 2 + 1 + 1 + 1 + 2 + 1 = 8
+
+  const big = estimateSales({
+    apps: apps('klaviyo yotpo gorgias rebuyengine attn.tv fbq("init" ttq.load klarna'),
+    meta: { productCount: 1500, countries: 80, currency: 'USD' },
+    products: { sampled: 100, medianPrice: 160, recentlyUpdated: 20 },
+    socialCount: 5,
+  });
+  assert.equal(big.tier, 'enterprise');
+  assert.match(big.offer, /Enterprise/);
+
+  const none = estimateSales({});
+  assert.equal(none.tier, 'early');
+  assert.equal(none.confidence, 'low');
+});
+
+test('size filter combines with the tag filter', () => {
+  const lead = (tier) => ({
+    emails: [{ email: 'a@b.com', score: 5, tag: 'business', sources: ['/'] }],
+    bestEmail: 'a@b.com',
+    sales: tier ? { tier } : null,
+  });
+  const allTags = new Set(PRESETS.all);
+  const onlyMid = new Set(['mid', 'large']);
+  assert.ok(applyFilters(lead('mid'), { tags: allTags, sizes: onlyMid }));
+  assert.equal(applyFilters(lead('early'), { tags: allTags, sizes: onlyMid }), null);
+  assert.equal(applyFilters(lead(null), { tags: allTags, sizes: onlyMid }), null);
+  assert.ok(applyFilters(lead(null), { tags: allTags, sizes: new Set(SIZE_ORDER) }));
+  assert.equal(applyFilters(lead('mid'), { tags: new Set(['likely owner']), sizes: onlyMid }), null);
+});
+
+test('scanStore adds a sales estimate for Shopify stores and exports it', async () => {
+  const res = await scanStore('bigstore.com', {
+    fetchImpl: mockFetch({
+      '/': {
+        body: `<title>Big Store</title><script src="https://cdn.shopify.com/x.js"></script>
+          <script src="https://static.klaviyo.com/x.js"></script><script>fbq('init','1')</script>`,
+      },
+      '/meta.json': {
+        body: '{"published_products_count":450,"ships_to_countries":["US","CA"],"currency":"EUR"}',
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      },
+      '/products.json': {
+        body: JSON.stringify({ products: [{ variants: [{ price: '80.00' }] }, { variants: [{ price: '120.00' }] }] }),
+        headers: { 'content-type': 'application/json' },
+      },
+      '/pages/contact': { body: 'hello@bigstore.com' },
+    }),
+  });
+  assert.equal(res.status, 'ok');
+  assert.ok(res.sales);
+  assert.equal(res.sales.productCount, 450);
+  assert.equal(res.sales.medianPrice, 100);
+  assert.equal(res.sales.currency, 'EUR');
+  assert.deepEqual(res.sales.apps, ['Klaviyo', 'Meta pixel']);
+  assert.equal(res.sales.tier, 'small'); // 450 products +3, median 100 +1, Klaviyo +1, pixel +1 = 6
+  const row = leadsToCsv([res]).trim().split('\r\n')[1];
+  assert.ok(row.includes(`${res.sales.range} (estimate),${res.sales.label},${res.sales.offer},450,EUR 100,"Klaviyo; Meta pixel",OK`), row);
+
+  const plain = await scanStore('plain.com', { fetchImpl: mockFetch({ '/': { body: '<title>Plain</title>' } }) });
+  assert.equal(plain.sales, null);
 });

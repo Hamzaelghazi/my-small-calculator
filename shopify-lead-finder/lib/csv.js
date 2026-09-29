@@ -18,6 +18,12 @@ export const CSV_COLUMNS = [
   'X',
   'YouTube',
   'Pinterest',
+  'Est. Monthly Sales',
+  'Store Size',
+  'Suggested Offer',
+  'Products',
+  'Median Price',
+  'Tech Stack',
   'Status',
   'Scanned At',
 ];
@@ -58,6 +64,7 @@ export function leadToRow(lead) {
   const emails = lead.emails || [];
   const best = emails.find((e) => e.email === lead.bestEmail);
   const s = lead.socials || {};
+  const sales = lead.sales || null;
   return [
     lead.storeName || '',
     lead.url || lead.input || '',
@@ -74,6 +81,12 @@ export function leadToRow(lead) {
     s.x || '',
     s.youtube || '',
     s.pinterest || '',
+    sales ? `${sales.range} (estimate)` : '',
+    sales ? sales.label : '',
+    sales ? sales.offer : '',
+    sales && sales.productCount != null ? sales.productCount : '',
+    sales && sales.medianPrice != null ? `${sales.currency ? sales.currency + ' ' : ''}${sales.medianPrice}` : '',
+    sales ? sales.apps.join('; ') : '',
     statusLabel(lead),
     lead.scannedAt || '',
   ];

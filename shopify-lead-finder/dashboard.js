@@ -1,5 +1,6 @@
 import { scanStore, parseUrlList, normalizeInput, rescoreLead, TAG_ORDER } from './lib/scanner.js';
-import { PRESETS, isFilterActive, applyTagFilter } from './lib/filters.js';
+import { PRESETS, isFilterActive, isSizeFilterActive, applyFilters } from './lib/filters.js';
+import { SIZE_ORDER, SIZE_TIERS, tierLabel } from './lib/sales.js';
 import { getLeads, saveLeads, deleteLead, clearLeads, onLeadsChanged } from './lib/storage.js';
 import { downloadCsv } from './lib/csv.js';
 import { h, copyText, copyButton, toast, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
@@ -72,6 +73,41 @@ function loadTagFilter() {
 
 let tagFilter = loadTagFilter();
 
+const SIZE_KEY = 'slf.sizeFilter';
+
+function loadSizeFilter() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null');
+    if (Array.isArray(saved)) return new Set(saved.filter((t) => SIZE_ORDER.includes(t)));
+  } catch {
+    /* storage unavailable */
+  }
+  return new Set(SIZE_ORDER);
+}
+
+let sizeFilter = loadSizeFilter();
+
+/** Current filters, as passed to applyFilters(). */
+function filters() {
+  return { tags: tagFilter, sizes: sizeFilter };
+}
+
+function anyFilterActive() {
+  return isFilterActive(tagFilter) || isSizeFilterActive(sizeFilter);
+}
+
+function setSizeFilter(sizes) {
+  sizeFilter = new Set(sizes);
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify([...sizeFilter]));
+  } catch {
+    /* storage unavailable */
+  }
+  renderFilterBar();
+  renderResults();
+  renderSaved();
+}
+
 function setTagFilter(tags) {
   tagFilter = new Set(tags);
   try {
@@ -121,9 +157,42 @@ function renderFilterBar() {
     preset('Owner-focused', PRESETS.owner),
     preset('Outreach-ready', PRESETS.outreach)
   );
-  $('filterNote').textContent = isFilterActive(tagFilter)
-    ? 'Stores without a matching email are hidden. Best email, copy and CSV export use only the selected tags.'
-    : 'Showing every email. Switch tags off to narrow the tables and the CSV export.';
+  const sizeChips = SIZE_ORDER.map((id) => {
+    const on = sizeFilter.has(id);
+    const tier = SIZE_TIERS.find((t) => t.id === id);
+    const chip = h(
+      'button',
+      {
+        type: 'button',
+        class: 'chip',
+        'aria-pressed': String(on),
+        title: tier ? `${tier.range} (estimate) · ${tier.offer}` : 'No estimate (not Shopify, failed, or saved before this feature)',
+      },
+      h('span', { class: 'chip-check', 'aria-hidden': 'true', text: on ? '✓' : '' }),
+      tierLabel(id),
+      tier ? h('span', { class: 'chip-sub', text: tier.range.replace('/mo', '') }) : null
+    );
+    chip.addEventListener('click', () => {
+      const next = new Set(sizeFilter);
+      if (on) next.delete(id);
+      else next.add(id);
+      setSizeFilter(next);
+    });
+    return chip;
+  });
+  $('sizeChips').replaceChildren(...sizeChips);
+  const allSizes = h('button', {
+    type: 'button',
+    class: 'btn btn-small btn-ghost preset',
+    'aria-pressed': String(!isSizeFilterActive(sizeFilter)),
+    text: 'All sizes',
+  });
+  allSizes.addEventListener('click', () => setSizeFilter(SIZE_ORDER));
+  $('sizePresets').replaceChildren(allSizes);
+
+  $('filterNote').textContent = anyFilterActive()
+    ? 'Stores that don’t match are hidden. Best email, copy and CSV export use only what’s selected.'
+    : 'Showing everything. Switch tags or sizes off to narrow the tables and the CSV export.';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -176,6 +245,23 @@ async function runPool(items, size, worker, signal) {
 /* -------------------------------------------------------------------------- */
 /* Results table                                                              */
 /* -------------------------------------------------------------------------- */
+
+/** "Est. sales" cell: monthly range plus tier, with the offer and signals on hover. */
+function salesCell(lead) {
+  const est = lead.sales;
+  if (!est) return h('span', { class: 'muted', text: '—' });
+  return h(
+    'span',
+    {
+      class: 'sales-cell',
+      title: `${est.label}: ${est.range} (rough estimate, ${est.confidence} confidence)\nSuggested offer: ${est.offer}${
+        est.reasons.length ? `\nSignals: ${est.reasons.join(' · ')}` : ''
+      }`,
+    },
+    h('span', { class: 'sales-range', text: est.range.replace('/mo', '') }),
+    h('span', { class: 'sales-tier', text: est.label })
+  );
+}
 
 function bestEmailCell(lead, { withTag = true } = {}) {
   if (!lead.bestEmail) return h('span', { class: 'muted', text: 'No public email' });
@@ -231,10 +317,10 @@ function detailRow(res, colSpan) {
 }
 
 function resultRows(orig, saveState) {
-  const res = applyTagFilter(orig, tagFilter);
+  const res = applyFilters(orig, filters());
   if (!res) return [];
   const others = res.emails.filter((e) => e.email !== res.bestEmail).length;
-  const detail = res.emails.length ? detailRow(res, 7) : null;
+  const detail = res.emails.length ? detailRow(res, 8) : null;
   let expand = h('span', { class: 'muted', text: '0' });
   if (detail) {
     expand = h('button', {
@@ -272,6 +358,7 @@ function resultRows(orig, saveState) {
     ),
     h('td', {}, bestEmailCell(res)),
     h('td', {}, expand),
+    h('td', {}, salesCell(res)),
     h('td', {}, socialLinks(res.socials) || h('span', { class: 'muted', text: '—' })),
     h('td', {}, statusCell(res, saveState))
   );
@@ -279,7 +366,7 @@ function resultRows(orig, saveState) {
 }
 
 function renderHiddenNote(el, hidden, noun) {
-  el.textContent = hidden ? `${hidden} ${noun}${hidden === 1 ? '' : 's'} hidden by the email filter` : '';
+  el.textContent = hidden ? `${hidden} ${noun}${hidden === 1 ? '' : 's'} hidden by the filter` : '';
   el.hidden = !hidden;
 }
 
@@ -288,7 +375,7 @@ function renderResults() {
   const rows = runResults.flatMap(({ res, saveState }) => resultRows(res, saveState));
   rows.forEach((r) => r.classList.remove('row-new'));
   $('resultsBody').replaceChildren(...rows);
-  shownResults = runResults.filter(({ res }) => applyTagFilter(res, tagFilter)).length;
+  shownResults = runResults.filter(({ res }) => applyFilters(res, filters())).length;
   $('resultsWrap').hidden = shownResults === 0;
   renderHiddenNote($('resultsHidden'), runResults.length - shownResults, 'store');
 }
@@ -484,7 +571,7 @@ function visibleLeads() {
   const q = $('search').value.trim();
   return Object.values(savedLeads)
     .filter((l) => leadMatches(l, q))
-    .map((l) => applyTagFilter(rescoreLead(l), tagFilter))
+    .map((l) => applyFilters(rescoreLead(l), filters()))
     .filter(Boolean)
     .sort((a, b) => String(b.savedAt || b.scannedAt).localeCompare(String(a.savedAt || a.scannedAt)));
 }
@@ -519,6 +606,7 @@ function savedRow(lead) {
     h('td', {}, bestEmailCell(lead, { withTag: false })),
     h('td', {}, best ? tagBadge(best.tag) : h('span', { class: 'muted', text: '—' })),
     h('td', { title: (lead.emails || []).map((e) => e.email).join('\n') }, String((lead.emails || []).length)),
+    h('td', {}, salesCell(lead)),
     h('td', { class: 'nowrap' }, (lead.phones || [])[0] || h('span', { class: 'muted', text: '—' })),
     h('td', {}, socialLinks(lead.socials) || h('span', { class: 'muted', text: '—' })),
     h(
@@ -549,8 +637,8 @@ function renderSaved() {
     empty.querySelector('p').textContent = 'Scan a list above, or open a store and click “Save lead” in the extension popup.';
   } else if (!rows.length) {
     empty.querySelector('h3').textContent = 'No matches';
-    empty.querySelector('p').textContent = isFilterActive(tagFilter)
-      ? 'No saved lead has an email with the selected tags. Switch more tags on in the email filter.'
+    empty.querySelector('p').textContent = anyFilterActive()
+      ? 'No saved lead matches the selected email tags and store sizes. Switch more on in the filter.'
       : 'Try a different name, domain or email.';
   }
   empty.hidden = rows.length > 0;
@@ -559,7 +647,7 @@ function renderSaved() {
   const q = $('search').value.trim();
   const searched = Object.values(savedLeads).filter((l) => leadMatches(l, q)).length;
   renderHiddenNote($('savedHidden'), searched - rows.length, 'lead');
-  const filtered = rows.length !== all || isFilterActive(tagFilter);
+  const filtered = rows.length !== all || anyFilterActive();
   $('exportBtn').textContent = filtered ? `Export CSV (${rows.length})` : 'Export CSV';
   $('exportBtn').disabled = !rows.length;
   $('copyAllBtn').disabled = !rows.some((l) => l.bestEmail);

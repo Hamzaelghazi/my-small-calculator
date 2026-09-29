@@ -115,6 +115,32 @@ function renderOthers(res) {
   );
 }
 
+function renderSales(res) {
+  const est = res.sales;
+  if (!est) return null;
+  return h(
+    'section',
+    { class: 'section' },
+    h('h3', { class: 'section-title', text: 'Estimated size' }),
+    h(
+      'div',
+      { class: 'sales' },
+      h(
+        'div',
+        { class: 'sales-row' },
+        h('span', { class: 'sales-range', text: est.range }),
+        h('span', { class: 'badge badge-size', text: est.label })
+      ),
+      h('div', { class: 'sales-offer' }, 'Suggested offer: ', h('strong', { text: est.offer })),
+      est.reasons.length ? h('p', { class: 'sales-reasons', text: est.reasons.join(' · ') }) : null,
+      h('p', {
+        class: 'sales-note',
+        text: `Rough estimate from public signals (${est.confidence} confidence). Not real sales data.`,
+      })
+    )
+  );
+}
+
 function renderStore(res) {
   return h(
     'section',
@@ -169,6 +195,7 @@ function render(res) {
       res.bestEmail ? renderHero(res) : renderEmptyEmails(res),
       renderOthers(res),
       renderStore(res),
+      renderSales(res),
       renderPhones(res),
       renderSocials(res),
       h('p', {

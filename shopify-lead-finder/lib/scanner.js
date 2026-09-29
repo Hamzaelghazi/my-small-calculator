@@ -7,6 +7,8 @@
  * @module scanner
  */
 
+import { detectApps, parseMeta, parseProducts, estimateSales } from './sales.js';
+
 /** Per-request timeout in milliseconds. */
 export const FETCH_TIMEOUT_MS = 12000;
 
@@ -28,6 +30,8 @@ export const EXTRA_PATHS = [
 ];
 
 const MAX_FOLLOWED_LINKS = 3;
+const META_PATH = '/meta.json';
+const PRODUCTS_PATH = '/products.json?limit=100';
 const FOLLOW_RE = /contact|about|support|wholesale/i;
 
 const EMAIL_FULL_RE = /^[a-z0-9._%+-]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}$/;
@@ -193,10 +197,11 @@ async function readCapped(res, maxBytes) {
  * Fetch one page with a timeout. Never throws.
  *
  * @param {string} url
- * @param {{ signal?: AbortSignal, fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
+ * @param {{ signal?: AbortSignal, fetchImpl?: typeof fetch, timeoutMs?: number, allowJson?: boolean }} [opts]
+ *   `allowJson` also accepts JSON responses (for /meta.json and /products.json).
  * @returns {Promise<Page>}
  */
-export async function fetchPage(url, { signal, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+export async function fetchPage(url, { signal, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS, allowJson = false } = {}) {
   const doFetch = fetchImpl || globalThis.fetch.bind(globalThis);
   const controller = new AbortController();
   let timedOut = false;
@@ -218,7 +223,7 @@ export async function fetchPage(url, { signal, fetchImpl, timeoutMs = FETCH_TIME
       headers: { Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.5' },
     });
     const contentType = (res.headers && res.headers.get('content-type')) || '';
-    const isHtml = !contentType || /html|xml|text\/plain/i.test(contentType);
+    const isHtml = !contentType || /html|xml|text\/plain/i.test(contentType) || (allowJson && /json/i.test(contentType));
     let html = '';
     if (isHtml && (res.ok || res.status === 401)) {
       html = await readCapped(res, MAX_BYTES);
@@ -860,6 +865,7 @@ export function findFollowLinks(html, origin, exclude, limit = MAX_FOLLOWED_LINK
  * @property {string[]} phones
  * @property {Record<string, string|null>} socials
  * @property {string[]} pagesChecked    Paths that returned a readable page.
+ * @property {import('./sales.js').SalesEstimate|null} sales  Rough size estimate (Shopify stores only).
  * @property {'ok'|'password_protected'|'error'} status
  * @property {string}  error            Readable message when status isn't "ok".
  * @property {string}  scannedAt        ISO timestamp.
@@ -877,6 +883,7 @@ function emptyResult(input) {
     phones: [],
     socials: Object.fromEntries(SOCIAL_KEYS.map((k) => [k, null])),
     pagesChecked: [],
+    sales: null,
     status: 'error',
     error: '',
     scannedAt: new Date().toISOString(),
@@ -1042,18 +1049,22 @@ export async function scanStore(input, { onProgress, signal, fetchImpl, timeoutM
     const queued = new Set(['/', ...EXTRA_PATHS.map((p) => p.toLowerCase())]);
     const followed = findFollowLinks(home.html, origin, queued);
     const paths = [...EXTRA_PATHS, ...followed];
-    const total = paths.length + 1;
+    // Shopify stores also expose public catalog JSON, used for the size estimate.
+    const jsonPaths = result.isShopify ? [META_PATH, PRODUCTS_PATH] : [];
+    const total = paths.length + jsonPaths.length + 1;
     let done = 1;
     progress({ step: 'page', path: '/', done, total });
 
-    const subpages = await Promise.all(
-      paths.map(async (path) => {
-        const page = await fetchPage(origin + path, { signal, fetchImpl, timeoutMs });
-        done++;
-        progress({ step: 'page', path, done, total });
-        return { path, page };
-      })
-    );
+    const fetchOne = async (path, allowJson) => {
+      const page = await fetchPage(origin + path, { signal, fetchImpl, timeoutMs, allowJson });
+      done++;
+      progress({ step: 'page', path, done, total });
+      return { path, page };
+    };
+    const [subpages, jsonPages] = await Promise.all([
+      Promise.all(paths.map((path) => fetchOne(path, false))),
+      Promise.all(jsonPaths.map((path) => fetchOne(path, true))),
+    ]);
     if (signal && signal.aborted) return stopped();
 
     const pages = [{ path: '/', html: home.html }];
@@ -1064,6 +1075,20 @@ export async function scanStore(input, { onProgress, signal, fetchImpl, timeoutM
 
     // 3. Extract
     collectContacts(result, pages, hosts);
+    if (result.isShopify) {
+      const jsonText = (path) => {
+        const hit = jsonPages.find((j) => j.path === path);
+        return hit && hit.page.ok ? hit.page.html : '';
+      };
+      const metaText = jsonText(META_PATH);
+      const productsText = jsonText(PRODUCTS_PATH);
+      result.sales = estimateSales({
+        apps: detectApps(home.html),
+        meta: metaText ? parseMeta(metaText) : null,
+        products: productsText ? parseProducts(productsText) : null,
+        socialCount: Object.values(result.socials).filter(Boolean).length,
+      });
+    }
     result.status = 'ok';
     result.error = '';
     result.scannedAt = new Date().toISOString();

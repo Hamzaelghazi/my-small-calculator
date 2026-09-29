@@ -91,6 +91,7 @@
               <th scope="col">Shopify</th>
               <th scope="col">Best email</th>
               <th scope="col">Other emails</th>
+              <th scope="col">Est. sales</th>
               <th scope="col">Socials</th>
               <th scope="col">Status</th>
             </tr>
@@ -103,10 +104,22 @@
 
     <section class="card filter-card" aria-labelledby="filterTitle">
       <div class="filter-head">
-        <h2 id="filterTitle">Email filter</h2>
-        <div class="presets" id="presets" role="group" aria-label="Filter presets"></div>
+        <h2 id="filterTitle">Filter</h2>
       </div>
-      <div class="chips" id="tagChips" role="group" aria-label="Show emails tagged"></div>
+      <div class="filter-group">
+        <div class="filter-label">
+          <span>Email tags</span>
+          <div class="presets" id="presets" role="group" aria-label="Email tag presets"></div>
+        </div>
+        <div class="chips" id="tagChips" role="group" aria-label="Show emails tagged"></div>
+      </div>
+      <div class="filter-group">
+        <div class="filter-label">
+          <span>Store size <small>(estimated monthly sales)</small></span>
+          <div class="presets" id="sizePresets" role="group" aria-label="Store size presets"></div>
+        </div>
+        <div class="chips" id="sizeChips" role="group" aria-label="Show store sizes"></div>
+      </div>
       <p class="hint" id="filterNote"></p>
     </section>
 
@@ -130,6 +143,7 @@
               <th scope="col">Best email</th>
               <th scope="col">Tag</th>
               <th scope="col">Emails</th>
+              <th scope="col">Est. sales</th>
               <th scope="col">Phone</th>
               <th scope="col">Socials</th>
               <th scope="col">Scanned</th>
