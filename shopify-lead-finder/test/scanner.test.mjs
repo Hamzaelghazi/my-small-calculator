@@ -14,8 +14,10 @@ import {
   extractSocials,
   findFollowLinks,
   scanStore,
+  rescoreLead,
 } from '../lib/scanner.js';
 import { leadsToCsv, csvCell } from '../lib/csv.js';
+import { applyTagFilter, isFilterActive, PRESETS } from '../lib/filters.js';
 
 /** Encode an address the way Cloudflare's email protection does. */
 function cfEncode(email, key = 0x5a) {
@@ -358,4 +360,71 @@ test('extraction stays fast on pathological 2MB input', () => {
   const found = extractEmails(`${blob} [at] ${blob}@${blob} hello@brand.com`);
   assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0}ms`);
   assert.ok(found.includes('hello@brand.com'));
+});
+
+test('store contact: emails from Shopify policy pages', () => {
+  const ranked = rankEmails(
+    new Map([
+      ['hello.maya@gmail.com', new Set(['/policies/contact-information'])],
+      ['legal@brand.com', new Set(['/policies/privacy-policy'])],
+      ['founder@brand.com', new Set(['/policies/contact-information'])],
+      ['team@brand.com', new Set(['/'])],
+    ]),
+    { storeDomains: ['brand.com'], storeSlugs: ['brand'] }
+  );
+  assert.deepEqual(
+    ranked.map((r) => [r.email, r.score, r.tag]),
+    [
+      ['founder@brand.com', 9, 'likely owner'], // owner wins the tag, still gets the bonus
+      ['hello.maya@gmail.com', 7, 'store contact'], // hello +2, personal +2, contact page +1, contact info +2
+      ['legal@brand.com', 4, 'store contact'],
+      ['team@brand.com', 3, 'business'],
+    ]
+  );
+});
+
+test('tag filter keeps matching emails and re-picks the best', () => {
+  const lead = {
+    url: 'https://brand.com',
+    emails: [
+      { email: 'info@brand.com', score: 5, tag: 'business', sources: ['/'] },
+      { email: 'shop@brand.com', score: 4, tag: 'store contact', sources: ['/policies/contact-information'] },
+      { email: 'noreply@brand.com', score: -2, tag: 'no-reply', sources: ['/'] },
+    ],
+    bestEmail: 'info@brand.com',
+  };
+  const all = new Set(PRESETS.all);
+  assert.equal(isFilterActive(all), false);
+  assert.equal(applyTagFilter(lead, all), lead);
+
+  const owner = new Set(PRESETS.owner);
+  const f = applyTagFilter(lead, owner);
+  assert.deepEqual(f.emails.map((e) => e.email), ['shop@brand.com']);
+  assert.equal(f.bestEmail, 'shop@brand.com');
+  assert.equal(lead.bestEmail, 'info@brand.com', 'original is untouched');
+
+  assert.equal(applyTagFilter(lead, new Set(['likely owner'])), null);
+  assert.equal(applyTagFilter(lead, new Set(['no-reply'])).bestEmail, null);
+
+  const [, row] = leadsToCsv([f]).trim().split('\r\n');
+  assert.ok(row.includes(',shop@brand.com,store contact,shop@brand.com,'), row);
+  assert.ok(!row.includes('info@brand.com'));
+});
+
+test('rescoreLead upgrades leads saved by an older version', () => {
+  const old = {
+    input: 'brand.com',
+    url: 'https://www.brand.com',
+    storeName: 'Brand',
+    emails: [
+      { email: 'info@brand.com', score: 5, tag: 'business', sources: ['/'] },
+      { email: 'hi.anna@gmail.com', score: 3, tag: 'personal inbox', sources: ['/policies/contact-information'] },
+    ],
+    bestEmail: 'info@brand.com',
+  };
+  const r = rescoreLead(old);
+  assert.equal(r.bestEmail, 'hi.anna@gmail.com');
+  assert.equal(r.emails[0].tag, 'store contact');
+  assert.equal(r.emails[1].tag, 'business');
+  assert.equal(rescoreLead({ emails: [] }).emails.length, 0);
 });

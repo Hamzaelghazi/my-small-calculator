@@ -1,4 +1,5 @@
-import { scanStore, parseUrlList, normalizeInput } from './lib/scanner.js';
+import { scanStore, parseUrlList, normalizeInput, rescoreLead, TAG_ORDER } from './lib/scanner.js';
+import { PRESETS, isFilterActive, applyTagFilter } from './lib/filters.js';
 import { getLeads, saveLead, deleteLead, clearLeads, onLeadsChanged } from './lib/storage.js';
 import { downloadCsv } from './lib/csv.js';
 import { h, copyText, copyButton, toast, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
@@ -7,6 +8,80 @@ const $ = (id) => document.getElementById(id);
 
 let controller = null;
 let savedLeads = {};
+/** Results of the current bulk run, so the table can re-render when the filter changes. */
+let runResults = [];
+
+/* -------------------------------------------------------------------------- */
+/* Email tag filter                                                           */
+/* -------------------------------------------------------------------------- */
+
+const FILTER_KEY = 'slf.tagFilter';
+
+function loadTagFilter() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || 'null');
+    if (Array.isArray(saved)) return new Set(saved.filter((t) => TAG_ORDER.includes(t)));
+  } catch {
+    /* storage unavailable */
+  }
+  return new Set(TAG_ORDER);
+}
+
+let tagFilter = loadTagFilter();
+
+function setTagFilter(tags) {
+  tagFilter = new Set(tags);
+  try {
+    localStorage.setItem(FILTER_KEY, JSON.stringify([...tagFilter]));
+  } catch {
+    /* storage unavailable */
+  }
+  renderFilterBar();
+  renderResults();
+  renderSaved();
+}
+
+function sameSet(a, list) {
+  return a.size === list.length && list.every((t) => a.has(t));
+}
+
+function renderFilterBar() {
+  const chips = TAG_ORDER.map((tag) => {
+    const on = tagFilter.has(tag);
+    const chip = h(
+      'button',
+      { type: 'button', class: `chip${tag === 'likely owner' ? ' chip-owner' : ''}`, 'aria-pressed': String(on) },
+      h('span', { class: 'chip-check', 'aria-hidden': 'true', text: on ? '✓' : '' }),
+      tag
+    );
+    chip.addEventListener('click', () => {
+      const next = new Set(tagFilter);
+      if (on) next.delete(tag);
+      else next.add(tag);
+      setTagFilter(next);
+    });
+    return chip;
+  });
+  const preset = (label, list) => {
+    const btn = h('button', {
+      type: 'button',
+      class: 'btn btn-small btn-ghost preset',
+      'aria-pressed': String(sameSet(tagFilter, list)),
+      text: label,
+    });
+    btn.addEventListener('click', () => setTagFilter(list));
+    return btn;
+  };
+  $('tagChips').replaceChildren(...chips);
+  $('presets').replaceChildren(
+    preset('All emails', PRESETS.all),
+    preset('Owner-focused', PRESETS.owner),
+    preset('Outreach-ready', PRESETS.outreach)
+  );
+  $('filterNote').textContent = isFilterActive(tagFilter)
+    ? 'Stores without a matching email are hidden. Best email, copy and CSV export use only the selected tags.'
+    : 'Showing every email. Switch tags off to narrow the tables and the CSV export.';
+}
 
 /* -------------------------------------------------------------------------- */
 /* URL input                                                                  */
@@ -112,7 +187,9 @@ function detailRow(res, colSpan) {
   );
 }
 
-function appendResult(res, saveState) {
+function resultRows(orig, saveState) {
+  const res = applyTagFilter(orig, tagFilter);
+  if (!res) return [];
   const others = res.emails.filter((e) => e.email !== res.bestEmail).length;
   const detail = res.emails.length ? detailRow(res, 7) : null;
   let expand = h('span', { class: 'muted', text: '0' });
@@ -155,9 +232,32 @@ function appendResult(res, saveState) {
     h('td', {}, socialLinks(res.socials) || h('span', { class: 'muted', text: '—' })),
     h('td', {}, statusCell(res, saveState))
   );
-  $('resultsBody').append(row);
-  if (detail) $('resultsBody').append(detail);
-  $('resultsWrap').hidden = false;
+  return detail ? [row, detail] : [row];
+}
+
+function renderHiddenNote(el, hidden, noun) {
+  el.textContent = hidden ? `${hidden} ${noun}${hidden === 1 ? '' : 's'} hidden by the email filter` : '';
+  el.hidden = !hidden;
+}
+
+/** Re-render the whole results table (after a filter change). */
+function renderResults() {
+  const rows = runResults.flatMap(({ res, saveState }) => resultRows(res, saveState));
+  rows.forEach((r) => r.classList.remove('row-new'));
+  $('resultsBody').replaceChildren(...rows);
+  const shown = runResults.filter(({ res }) => applyTagFilter(res, tagFilter)).length;
+  $('resultsWrap').hidden = shown === 0;
+  renderHiddenNote($('resultsHidden'), runResults.length - shown, 'store');
+}
+
+/** Add one finished store to the results table. */
+function addResult(res, saveState) {
+  runResults.push({ res, saveState });
+  const rows = resultRows(res, saveState);
+  $('resultsBody').append(...rows);
+  if (rows.length) $('resultsWrap').hidden = false;
+  const shown = runResults.filter((r) => applyTagFilter(r.res, tagFilter)).length;
+  renderHiddenNote($('resultsHidden'), runResults.length - shown, 'store');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -210,8 +310,10 @@ async function start() {
   }
 
   $('run').hidden = false;
+  runResults = [];
   $('resultsBody').replaceChildren();
   $('resultsWrap').hidden = true;
+  renderHiddenNote($('resultsHidden'), 0, 'store');
 
   const stats = { total: queue.length, done: 0, emails: 0, skipped };
   const active = new Set();
@@ -252,7 +354,7 @@ async function start() {
       }
       stats.done++;
       stats.emails += res.emails.length;
-      appendResult(res, saveState);
+      addResult(res, saveState);
       renderProgress(stats, active);
     },
     signal
@@ -291,10 +393,13 @@ function leadMatches(lead, q) {
     .every((w) => hay.includes(w));
 }
 
+/** Saved leads after search and tag filter, newest first. */
 function visibleLeads() {
   const q = $('search').value.trim();
   return Object.values(savedLeads)
     .filter((l) => leadMatches(l, q))
+    .map((l) => applyTagFilter(rescoreLead(l), tagFilter))
+    .filter(Boolean)
     .sort((a, b) => String(b.savedAt || b.scannedAt).localeCompare(String(a.savedAt || a.scannedAt)));
 }
 
@@ -352,12 +457,17 @@ function renderSaved() {
     empty.querySelector('p').textContent = 'Scan a list above, or open a store and click “Save lead” in the extension popup.';
   } else if (!rows.length) {
     empty.querySelector('h3').textContent = 'No matches';
-    empty.querySelector('p').textContent = 'Try a different name, domain or email.';
+    empty.querySelector('p').textContent = isFilterActive(tagFilter)
+      ? 'No saved lead has an email with the selected tags. Switch more tags on in the email filter.'
+      : 'Try a different name, domain or email.';
   }
   empty.hidden = rows.length > 0;
   $('savedWrap').hidden = rows.length === 0;
 
-  const filtered = rows.length !== all;
+  const q = $('search').value.trim();
+  const searched = Object.values(savedLeads).filter((l) => leadMatches(l, q)).length;
+  renderHiddenNote($('savedHidden'), searched - rows.length, 'lead');
+  const filtered = rows.length !== all || isFilterActive(tagFilter);
   $('exportBtn').textContent = filtered ? `Export CSV (${rows.length})` : 'Export CSV';
   $('exportBtn').disabled = !rows.length;
   $('copyAllBtn').disabled = !rows.some((l) => l.bestEmail);
@@ -409,6 +519,7 @@ async function init() {
     scheduleRenderSaved();
   });
   savedLeads = await getLeads();
+  renderFilterBar();
   renderSaved();
   updateUrlCount();
 }

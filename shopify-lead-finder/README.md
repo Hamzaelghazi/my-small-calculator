@@ -36,12 +36,21 @@ Click **Open bulk scanner** in the popup. It opens a full tab.
 4. Each finished store is **saved automatically**, so closing the tab loses nothing. Stores that failed (timeout, blocked, not found) are shown in the table but not saved.
 5. In the results table, click a best email to copy it. Click the **+N** button to see every email found for that store.
 
+### Email filter
+
+The **Email filter** bar controls which emails count, in both tables and in everything you copy or export.
+
+- Click a tag to switch it on or off. Stores with no email carrying a selected tag are hidden, and the page says how many.
+- The best email is picked again from the emails that pass the filter, so **Copy all best emails** and **Export CSV** only give you addresses with the tags you chose. The CSV's "All Emails" column is filtered too.
+- Presets: **All emails**, **Owner-focused** (likely owner + store contact) and **Outreach-ready** (everything except support and no-reply).
+- Your choice is remembered next time you open the bulk scanner.
+
 ### Saved leads
 
 The lower section lists every saved lead, including ones saved from the popup.
 
 - **Search** filters by store name, URL or any email.
-- **Export CSV** downloads `shopify-leads-YYYY-MM-DD.csv`. When a search is active, only the matching leads are exported.
+- **Export CSV** downloads `shopify-leads-YYYY-MM-DD.csv`. When a search or the email filter is active, only the matching leads and emails are exported, and the button shows the count.
 - **Copy all best emails** copies the best email from each visible lead, one per line.
 - **Delete** removes one lead. **Clear all** removes all of them after you confirm.
 
@@ -71,15 +80,24 @@ Each email gets a score. The highest is shown as the best email.
 | Personal inbox (Gmail, Outlook, Hotmail, Yahoo, iCloud, Proton…) | +2 |
 | support, help, care, service, orders | +1 |
 | Found on a contact page | +1 |
+| Found on `/policies/contact-information` (the store email from Shopify settings) | +2 |
+| Found on another `/policies/` page (instead of the +2 above) | +1 |
 | noreply, no-reply, donotreply, mailer-daemon | −5 |
 
 | Tag | Meaning |
 | --- | --- |
 | **likely owner** (amber) | Named like an owner (owner@, founder@, ceo@) or after the store itself (glowbrand@gmail.com). Your best shot at a decision maker. |
+| **store contact** | Found on the store's Shopify policy pages. Shopify fills `/policies/contact-information` and its generated policy templates from the store email set in the admin settings, so this is usually the inbox the owner registered with Shopify. |
 | **business** | A general business inbox (info@, hello@, sales@, wholesale@) or a named address on the store's domain. Usually read by the owner on small stores. |
 | **personal inbox** | A Gmail, Outlook, iCloud or similar address. On small stores this is often the owner directly. |
 | **support** | A customer service inbox (support@, help@, orders@). Monitored, but it may be a team or an outsourced help desk. |
 | **no-reply** | A no-reply address. Kept in the list for completeness but never chosen as the best email. |
+
+### About the Shopify "notification" email
+
+The sender and notification emails in a store's Shopify admin are private. No public page or API exposes them, and this extension doesn't try to get them. The **store contact** tag is the closest public equivalent: the email the store chose to publish on its Shopify contact-information and policy pages.
+
+Leads saved by an earlier version are re-scored automatically with the current rules, so they get the store contact tag without a re-scan.
 
 ## Known limits
 
@@ -106,6 +124,7 @@ shopify-lead-finder/
 │   ├── scanner.js    scanning, extraction, scoring (no DOM, runs in Node too)
 │   ├── storage.js    chrome.storage.local helpers
 │   ├── csv.js        CSV export
+│   ├── filters.js    email tag filter (tables + export)
 │   ├── ui.js         shared DOM helpers and icons
 │   └── theme.css     shared design tokens (light + dark)
 ├── icons/            16, 32, 48, 128 px

@@ -1,4 +1,4 @@
-import { scanStore, normalizeInput } from './lib/scanner.js';
+import { scanStore, normalizeInput, rescoreLead } from './lib/scanner.js';
 import { getLeads, saveLead, onLeadsChanged } from './lib/storage.js';
 import { h, copyButton, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
@@ -273,8 +273,8 @@ async function init() {
 
   const saved = await findSaved(leads);
   if (saved) {
-    current = saved;
-    render(saved);
+    current = rescoreLead(saved);
+    render(current);
     setSaved(true);
     $('scanBtn').textContent = 'Scan again';
   }

@@ -95,6 +95,16 @@
           <tbody id="resultsBody"></tbody>
         </table>
       </div>
+      <p class="hint hidden-note" id="resultsHidden" hidden></p>
+    </section>
+
+    <section class="card filter-card" aria-labelledby="filterTitle">
+      <div class="filter-head">
+        <h2 id="filterTitle">Email filter</h2>
+        <div class="presets" id="presets" role="group" aria-label="Filter presets"></div>
+      </div>
+      <div class="chips" id="tagChips" role="group" aria-label="Show emails tagged"></div>
+      <p class="hint" id="filterNote"></p>
     </section>
 
     <section class="card" id="saved" aria-labelledby="savedTitle">
@@ -126,6 +136,7 @@
           <tbody id="savedBody"></tbody>
         </table>
       </div>
+      <p class="hint hidden-note" id="savedHidden" hidden></p>
       <div class="empty" id="savedEmpty" hidden>
         <h3>No saved leads yet</h3>
         <p>Scan a list above, or open a store and click “Save lead” in the extension popup.</p>

@@ -170,6 +170,11 @@ a {
   border-color: var(--amber);
   color: var(--amber-ink);
 }
+.badge-store {
+  background: transparent;
+  border-color: var(--accent-text);
+  color: var(--accent-text);
+}
 .badge-business {
   background: var(--accent-soft);
   border-color: transparent;

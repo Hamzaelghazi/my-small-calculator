@@ -65,11 +65,15 @@ const NOREPLY_RE = /no-?reply|do-?not-?reply|mailer-?daemon/;
 /** Tag names, from most to least interesting for outreach. */
 export const TAGS = {
   OWNER: 'likely owner',
+  STORE: 'store contact',
   BUSINESS: 'business',
   PERSONAL: 'personal inbox',
   SUPPORT: 'support',
   NOREPLY: 'no-reply',
 };
+
+/** All tags in display order. */
+export const TAG_ORDER = Object.values(TAGS);
 
 const SOCIAL_KEYS = ['instagram', 'facebook', 'tiktok', 'linkedin', 'x', 'youtube', 'pinterest'];
 
@@ -631,6 +635,10 @@ export function scoreEmail(email, sources, ctx) {
   const isPersonal = PERSONAL_DOMAIN_RE.test(domain);
   const isSupport = hasWord(SUPPORT_WORDS);
   const onContactPage = sources.some((p) => /contact/i.test(p));
+  // Shopify fills /policies/contact-information (and its generated policy
+  // templates) from the store email in the admin settings.
+  const onContactInfo = sources.some((p) => /^\/policies\/contact-information\/?$/i.test(p));
+  const onPolicyPage = sources.some((p) => /^\/policies\//i.test(p));
   const isNoReply = NOREPLY_RE.test(local);
 
   let score = 0;
@@ -640,11 +648,14 @@ export function scoreEmail(email, sources, ctx) {
   if (isPersonal) score += 2;
   if (isSupport) score += 1;
   if (onContactPage) score += 1;
+  if (onContactInfo) score += 2;
+  else if (onPolicyPage) score += 1;
   if (isNoReply) score -= 5;
 
   let tag;
   if (isNoReply) tag = TAGS.NOREPLY;
   else if (isOwner) tag = TAGS.OWNER;
+  else if (onPolicyPage) tag = TAGS.STORE;
   else if (isPersonal) tag = TAGS.PERSONAL;
   else if (isSupport && !isBusiness) tag = TAGS.SUPPORT;
   else tag = TAGS.BUSINESS;
@@ -879,6 +890,54 @@ function emptyResult(input) {
  * @param {{ path: string, html: string }[]} pages
  * @param {string[]} hosts
  */
+/**
+ * Domains and name slugs used to recognize the store's own addresses.
+ *
+ * @param {string} storeName
+ * @param {string[]} hosts
+ * @param {string} myshopifyDomain
+ * @returns {ScoreContext}
+ */
+function scoreContext(storeName, hosts, myshopifyDomain) {
+  const storeDomains = [...new Set(hosts.filter(Boolean).map((h) => h.replace(/^www\./, '')))];
+  const storeSlugs = new Set([slug(storeName)]);
+  for (const d of storeDomains) {
+    const label = d.split('.')[0];
+    if (!/^(?:shop|store|www)$/.test(label)) storeSlugs.add(slug(label));
+  }
+  if (myshopifyDomain) storeSlugs.add(slug(myshopifyDomain.split('.')[0]));
+  return { storeDomains, storeSlugs: [...storeSlugs] };
+}
+
+function pickBest(emails) {
+  return emails.length && emails[0].score >= 0 ? emails[0].email : null;
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Re-score a saved lead with the current rules, using the page sources stored
+ * with each email. Lets leads saved by an older version pick up new tags
+ * without a re-scan.
+ *
+ * @param {ScanResult} lead
+ * @returns {ScanResult}
+ */
+export function rescoreLead(lead) {
+  if (!lead || !Array.isArray(lead.emails) || !lead.emails.length) return lead;
+  const input = normalizeInput(lead.input || '');
+  const hosts = [hostOf(lead.url), input.ok ? hostOf(input.origin) : ''];
+  const sources = new Map(lead.emails.map((e) => [e.email, new Set(e.sources || [])]));
+  const emails = rankEmails(sources, scoreContext(lead.storeName, hosts, lead.myshopifyDomain));
+  return { ...lead, emails, bestEmail: pickBest(emails) };
+}
+
 function collectContacts(result, pages, hosts) {
   const emailSources = new Map();
   for (const { path, html } of pages) {
@@ -888,16 +947,8 @@ function collectContacts(result, pages, hosts) {
     }
   }
 
-  const storeDomains = [...new Set(hosts.map((h) => h.replace(/^www\./, '')))];
-  const storeSlugs = new Set([slug(result.storeName)]);
-  for (const d of storeDomains) {
-    const label = d.split('.')[0];
-    if (!/^(?:shop|store|www)$/.test(label)) storeSlugs.add(slug(label));
-  }
-  if (result.myshopifyDomain) storeSlugs.add(slug(result.myshopifyDomain.split('.')[0]));
-
-  result.emails = rankEmails(emailSources, { storeDomains, storeSlugs: [...storeSlugs] });
-  result.bestEmail = result.emails.length && result.emails[0].score >= 0 ? result.emails[0].email : null;
+  result.emails = rankEmails(emailSources, scoreContext(result.storeName, hosts, result.myshopifyDomain));
+  result.bestEmail = pickBest(result.emails);
 
   const seen = new Set();
   for (const { html } of pages) {

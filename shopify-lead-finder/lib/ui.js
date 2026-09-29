@@ -102,6 +102,7 @@ export function copyButton(text, { label = 'Copy', className = 'btn btn-small', 
 
 const TAG_CLASS = {
   'likely owner': 'badge-owner',
+  'store contact': 'badge-store',
   business: 'badge-business',
   'personal inbox': 'badge-personal',
   support: 'badge-support',
