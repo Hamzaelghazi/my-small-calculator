@@ -1,0 +1,11 @@
+{
+  "name": "shopify-lead-finder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome extension. No build step: load this folder via chrome://extensions > Load unpacked. This file only exists so Node can run the tests.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/scanner.test.mjs",
+    "icons": "node tools/make-icons.mjs"
+  }
+}

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bulk scanner · Shopify Lead Finder</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="lib/theme.css">
+  <link rel="stylesheet" href="dashboard.css">
+  <script type="module" src="dashboard.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div class="brand">
+        <img src="icons/icon32.png" alt="" width="24" height="24">
+        <span>Shopify Lead Finder</span>
+      </div>
+      <a href="#saved" class="top-link" id="savedCountTop">0 saved leads</a>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="card" aria-labelledby="bulkTitle">
+      <div class="card-head">
+        <div>
+          <h1 id="bulkTitle">Bulk scanner</h1>
+          <p class="lede">Paste store URLs, one per line or separated by commas. Each result is saved as soon as it finishes, so you can close this tab at any time.</p>
+        </div>
+      </div>
+
+      <div class="bulk-grid">
+        <div class="field">
+          <label for="urls">Store URLs</label>
+          <textarea id="urls" rows="9" spellcheck="false" autocomplete="off" placeholder="brand.com&#10;https://another-store.com&#10;third-store.myshopify.com"></textarea>
+          <p class="hint" id="urlCount" aria-live="polite">No URLs yet</p>
+        </div>
+
+        <div class="options">
+          <fieldset class="field">
+            <legend>Stores at a time</legend>
+            <div class="segmented" role="radiogroup">
+              <label><input type="radio" name="concurrency" value="2"><span>2</span></label>
+              <label><input type="radio" name="concurrency" value="4" checked><span>4</span></label>
+              <label><input type="radio" name="concurrency" value="6"><span>6</span></label>
+            </div>
+          </fieldset>
+
+          <label class="check">
+            <input type="checkbox" id="shopifyOnly" checked>
+            <span>
+              Shopify stores only
+              <small>Non-Shopify results are shown but not saved</small>
+            </span>
+          </label>
+
+          <label class="check">
+            <input type="checkbox" id="skipSaved" checked>
+            <span>
+              Skip stores already saved
+              <small>Uncheck to re-scan and refresh them</small>
+            </span>
+          </label>
+
+          <div class="run-buttons">
+            <button type="button" id="startBtn" class="btn btn-primary">Start scan</button>
+            <button type="button" id="stopBtn" class="btn" disabled>Stop</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="run" id="run" hidden>
+        <div class="bar" id="bar" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="bar-fill" id="barFill"></div>
+        </div>
+        <div class="run-text">
+          <p id="progressText" role="status" aria-live="polite">0 of 0 scanned, 0 emails found</p>
+          <p id="activeText" class="hint"></p>
+        </div>
+      </div>
+
+      <div class="table-wrap" id="resultsWrap" hidden>
+        <table class="table" aria-label="Scan results">
+          <thead>
+            <tr>
+              <th scope="col">Store</th>
+              <th scope="col">URL</th>
+              <th scope="col">Shopify</th>
+              <th scope="col">Best email</th>
+              <th scope="col">Other emails</th>
+              <th scope="col">Socials</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="saved" aria-labelledby="savedTitle">
+      <div class="card-head card-head-row">
+        <h2 id="savedTitle">Saved leads <span class="count" id="savedCount">0</span></h2>
+        <div class="toolbar">
+          <label class="visually-hidden" for="search">Search saved leads</label>
+          <input type="search" id="search" class="search" placeholder="Search name, URL or email">
+          <button type="button" id="exportBtn" class="btn btn-primary">Export CSV</button>
+          <button type="button" id="copyAllBtn" class="btn">Copy all best emails</button>
+          <button type="button" id="clearBtn" class="btn btn-danger">Clear all</button>
+        </div>
+      </div>
+
+      <div class="table-wrap" id="savedWrap">
+        <table class="table" aria-label="Saved leads">
+          <thead>
+            <tr>
+              <th scope="col">Store</th>
+              <th scope="col">Best email</th>
+              <th scope="col">Tag</th>
+              <th scope="col">Emails</th>
+              <th scope="col">Phone</th>
+              <th scope="col">Socials</th>
+              <th scope="col">Scanned</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="savedBody"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="savedEmpty" hidden>
+        <h3>No saved leads yet</h3>
+        <p>Scan a list above, or open a store and click “Save lead” in the extension popup.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

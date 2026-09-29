@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shopify Lead Finder</title>
+  <link rel="stylesheet" href="lib/theme.css">
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icons/icon32.png" alt="" width="20" height="20">
+      <span>Shopify Lead Finder</span>
+    </div>
+    <span class="saved-count" id="savedCount" title="Saved leads">0 saved</span>
+  </header>
+
+  <main class="main">
+    <div class="site">
+      <div class="site-text">
+        <span class="site-label">Current tab</span>
+        <span class="site-domain" id="domain">Loading…</span>
+      </div>
+      <span id="platform" hidden></span>
+    </div>
+
+    <button type="button" id="scanBtn" class="btn btn-primary btn-block btn-scan" disabled>Scan this store</button>
+
+    <p id="progress" class="progress" role="status" aria-live="polite" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="progressText">Checking homepage…</span>
+    </p>
+
+    <div id="message" class="state" hidden></div>
+    <div id="results" class="results" hidden></div>
+  </main>
+
+  <footer class="actions">
+    <button type="button" id="saveBtn" class="btn" disabled>Save lead</button>
+    <button type="button" id="openDashboard" class="btn btn-ghost">Open bulk scanner</button>
+  </footer>
+</body>
+</html>

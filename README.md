@@ -32,3 +32,7 @@ Install my-project with npm
 i learn how to use javascript for the first time in the reality to build an effect calculator application  using HTML CSS and javascript . 
 
 
+
+## Also in this repo: Shopify Lead Finder
+
+[`shopify-lead-finder/`](shopify-lead-finder/) is a Chrome extension that finds public contact emails, phones and socials of Shopify stores, ranks the best email, and exports leads to CSV. See its [README](shopify-lead-finder/README.md) for install and usage.

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Shopify Lead Finder",
+  "short_name": "Lead Finder",
+  "version": "1.0.0",
+  "description": "Find publicly listed contact emails, phones and socials of Shopify stores, rank the best email, and export leads to CSV.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Shopify Lead Finder",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
