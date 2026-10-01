@@ -16,6 +16,11 @@ After you edit any file, click the reload icon on the extension's card in `chrom
 
 ## Scan one store (popup)
 
+Other ways to open the extension, if clicking the icon doesn't work:
+
+- Press **Alt+Shift+L** on a store's page to open the popup. You can change the shortcut at `chrome://extensions/shortcuts`.
+- Right-click the extension icon and choose **Options** to open the bulk scanner, then paste the store's URL.
+
 1. Open any page of a store in your current tab.
 2. Click the extension icon, then **Scan this store**.
 3. The progress line shows each page as it's checked. A scan usually takes 2–10 seconds. Keep the popup open until it finishes.
