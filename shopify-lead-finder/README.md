@@ -45,15 +45,14 @@ Click **Open bulk scanner** in the popup. It opens a full tab.
 
 ### Scanning 1000+ stores
 
-Paste the whole list at once. There's no limit on list size.
+Paste the whole list, or click **Load from file (.txt, .csv)**. A file import picks out every web address and domain and ignores everything else, such as names, numbers, headers and email addresses, so you can load an exported spreadsheet as it is.
 
-- **Speed:** each store takes a few seconds, since up to 16 pages are checked. At 20 stores at a time, 1000 stores usually take about 10–25 minutes, depending on how fast the stores respond. The progress line shows how many are done, how many failed, and an estimate of the time left.
-- **Leave the tab open.** It can be in the background, but it has to stay open. Don't let the computer go to sleep.
-- **Resume:** your URL list is remembered, and **Skip stores already scanned** is on by default. If the tab closes or you press Stop, open the bulk scanner again and press **Start scan** to carry on where you left off. Only failed stores are tried again.
-- **Blocked stores:** hitting many stores quickly can get you rate-limited (429). Use **Retry failed** afterwards, or lower the speed.
-- **Storage:** the extension has unlimited local storage, so tens of thousands of leads fit. The saved-leads table shows the newest 300. Search to find others. Export CSV and Copy all best emails always include every matching lead.
-
-The scanning itself is not "all 1000 at the same instant". That would mean over 10,000 requests at once, which Chrome caps and stores would block. A pool of 10–30 workers is the fastest setup that stays reliable.
+- **All at once:** under **Stores at a time**, choose **All at once** to start every store in the list together. Behind the scenes, at most 60 requests are on the network at a time. That keeps Chrome responsive and makes stores (most share Shopify's servers) less likely to block you. Each request's 12-second timeout only starts once it's actually sent. You can also pick 10, 30 or 100 stores at a time.
+- **Quick scan:** checks only the homepage, `/pages/contact` and `/policies/contact-information`, plus the catalog data for the size estimate. That's about 5 requests per store instead of about 16, roughly 3× faster, though it finds slightly fewer emails. In a local test, 1000 stores took about 40 seconds with Quick scan and about 110 seconds with the full scan. Real stores are slower: expect a few minutes for a Quick scan of 1000 and 10–20 minutes for a full one.
+- **Leave the tab open.** It can be in the background, but don't let the computer sleep. The progress line shows done, failed and time left.
+- **Resume:** your URL list, speed and Quick scan choice are remembered, and **Skip stores already scanned** is on by default. If the tab closes, open the bulk scanner again and press **Start scan**.
+- **Blocked stores:** with very large runs, some stores may answer "Blocked by the site (429)". Use **Retry failed** afterwards, or pick a lower speed.
+- **Storage:** the extension has unlimited local storage. The saved-leads table shows the newest 300. Search to find others. Export CSV and Copy all best emails always include every matching lead.
 
 ### Email filter
 

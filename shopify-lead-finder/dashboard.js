@@ -1,4 +1,4 @@
-import { scanStore, parseUrlList, rescoreLead, leadBestPhone, TAG_ORDER } from './lib/scanner.js';
+import { scanStore, parseUrlList, extractUrlsFromText, rescoreLead, leadBestPhone, setMaxConnections, TAG_ORDER } from './lib/scanner.js';
 import { PRESETS, isFilterActive, isSizeFilterActive, applyFilters } from './lib/filters.js';
 import { SIZE_ORDER, SIZE_TIERS, tierLabel } from './lib/sales.js';
 import {
@@ -274,9 +274,19 @@ function updateUrlCount() {
   $('urlCount').textContent = parts.join(' · ');
 }
 
+/**
+ * Requests on the network at once, across all stores. "All at once" starts
+ * every store immediately; this cap keeps Chrome responsive and keeps stores
+ * (most share Shopify's servers) from rate-limiting you.
+ */
+const MAX_CONNECTIONS = 60;
+setMaxConnections(MAX_CONNECTIONS);
+
+/** Stores scanned in parallel. "all" = every store in the list at once. */
 function concurrency() {
   const el = document.querySelector('input[name="concurrency"]:checked');
-  return el ? Number(el.value) : 4;
+  if (!el) return 10;
+  return el.value === 'all' ? Infinity : Number(el.value);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -485,7 +495,7 @@ function setRunning(running) {
   $('stopBtn').disabled = !running;
   $('urls').disabled = running;
   $('retryBtn').disabled = running;
-  document.querySelectorAll('input[name="concurrency"], #shopifyOnly, #skipSaved, #cdOnly').forEach((el) => {
+  document.querySelectorAll('input[name="concurrency"], #shopifyOnly, #skipSaved, #cdOnly, #quickScan, #loadFileBtn').forEach((el) => {
     el.disabled = running;
   });
   $('startBtn').textContent = running ? 'Scanning…' : 'Start scan';
@@ -514,7 +524,7 @@ function renderProgress(stats, active) {
     const hosts = [...active].map(displayHost);
     side = `Scanning ${hosts.slice(0, 3).join(', ')}${hosts.length > 3 ? ` +${hosts.length - 3} more` : ''}`;
     // Estimate after a few stores so the first slow ones don't skew it.
-    if (stats.done >= 5 && stats.done < stats.total) {
+    if (stats.done >= Math.max(5, stats.total * 0.02) && stats.done < stats.total) {
       const perStore = (Date.now() - stats.startedAt) / stats.done;
       const left = formatDuration(perStore * (stats.total - stats.done));
       side += left === 'under a minute' ? ' · under a minute left' : ` · about ${left} left`;
@@ -600,6 +610,7 @@ async function start(retryList) {
   const { signal } = controller;
   const shopifyOnly = $('shopifyOnly').checked;
   const cdOnly = $('cdOnly').checked;
+  const quick = $('quickScan').checked;
   setRunning(true);
 
   await runPool(
@@ -626,7 +637,7 @@ async function start(retryList) {
         }
       }
 
-      const res = await scanStore(url, { signal });
+      const res = await scanStore(url, { signal, quick });
       active.delete(url);
       if (signal.aborted) return; // stopped mid-scan: drop the partial result
       if (hosting) res.hosting = hosting;
@@ -831,6 +842,46 @@ async function init() {
     if (controller) e.preventDefault();
   });
   $('startBtn').addEventListener('click', () => start());
+
+  // Load a .txt or .csv list of stores into the URL box (any cell that looks like a domain counts).
+  $('loadFileBtn').addEventListener('click', () => $('urlFile').click());
+  $('urlFile').addEventListener('change', async () => {
+    const file = $('urlFile').files[0];
+    $('urlFile').value = '';
+    if (!file) return;
+    const text = extractUrlsFromText(await file.text());
+    const box = $('urls');
+    box.value = box.value.trim() ? `${box.value.trim()}\n${text}` : text;
+    box.dispatchEvent(new Event('input'));
+    const { origins } = parseUrlList(text);
+    toast(`Loaded ${origins.length} store URL${origins.length === 1 ? '' : 's'} from ${file.name}`);
+  });
+
+  // Remember speed and Quick scan between visits.
+  try {
+    const savedSpeed = localStorage.getItem('slf.speed');
+    const radio = savedSpeed && document.querySelector(`input[name="concurrency"][value="${savedSpeed}"]`);
+    if (radio) radio.checked = true;
+    $('quickScan').checked = localStorage.getItem('slf.quick') === '1';
+  } catch {
+    /* storage unavailable */
+  }
+  document.querySelectorAll('input[name="concurrency"]').forEach((r) =>
+    r.addEventListener('change', () => {
+      try {
+        localStorage.setItem('slf.speed', r.value);
+      } catch {
+        /* ignore */
+      }
+    })
+  );
+  $('quickScan').addEventListener('change', () => {
+    try {
+      localStorage.setItem('slf.quick', $('quickScan').checked ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  });
   // Shared with the popup through chrome.storage.local.
   $('cdOnly').checked = await getCrazyDomainsOnly();
   $('cdOnly').addEventListener('change', () => setCrazyDomainsOnly($('cdOnly').checked));

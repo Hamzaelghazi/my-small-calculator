@@ -604,3 +604,14 @@ textarea:focus,
   display: flex;
   width: max-content;
 }
+
+.urls-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.urls-head label {
+  font-weight: 500;
+  font-size: 13px;
+}

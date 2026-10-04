@@ -704,3 +704,62 @@ test('isCrazyDomainsHosted caches successful lookups, not failures', async () =>
   await isCrazyDomainsHosted('flaky.com', { fetchImpl: down.fetchImpl });
   assert.ok(down.calls.length > before, 'failed lookup retried');
 });
+
+/* ------------------------------ big runs ------------------------------ */
+
+import { setMaxConnections, QUICK_PATHS, extractUrlsFromText } from '../lib/scanner.js';
+
+test('connection cap holds with many stores scanning at once', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const fetchImpl = async (url) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 2));
+    inFlight--;
+    const path = new URL(url).pathname;
+    return fakeResponse(url, path === '/' ? 200 : 404, path === '/' ? '<title>S</title> hi@s.com' : 'no');
+  };
+  setMaxConnections(5);
+  try {
+    const results = await Promise.all(Array.from({ length: 40 }, (_, i) => scanStore(`s${i}.com`, { fetchImpl })));
+    assert.equal(results.filter((r) => r.status === 'ok').length, 40);
+    assert.ok(peak <= 5, `peak ${peak}`);
+  } finally {
+    setMaxConnections(Infinity);
+  }
+});
+
+test('stopping a run releases stores waiting for a connection', async () => {
+  const controller = new AbortController();
+  const fetchImpl = (url, { signal }) =>
+    new Promise((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+  setMaxConnections(2);
+  try {
+    const all = Promise.all(Array.from({ length: 10 }, (_, i) => scanStore(`w${i}.com`, { fetchImpl, signal: controller.signal })));
+    setTimeout(() => controller.abort(), 20);
+    const results = await all;
+    assert.ok(results.every((r) => r.error === 'Scan stopped'));
+  } finally {
+    setMaxConnections(Infinity);
+  }
+});
+
+test('quick scan requests far fewer pages', async () => {
+  const seen = [];
+  const fetchImpl = async (url) => {
+    seen.push(new URL(url).pathname);
+    const path = new URL(url).pathname;
+    if (path === '/') return fakeResponse(url, 200, '<title>Q</title><a href="/pages/wholesale">Wholesale</a>');
+    if (path === '/policies/contact-information') return fakeResponse(url, 200, 'Email: owner@q.com');
+    return fakeResponse(url, 404, 'no');
+  };
+  const res = await scanStore('q.com', { fetchImpl, quick: true });
+  assert.equal(res.bestEmail, 'owner@q.com');
+  assert.deepEqual(seen.sort(), ['/', ...QUICK_PATHS].sort());
+});
+
+test('extractUrlsFromText keeps URLs and domains from a CSV, skips names and emails', () => {
+  const csv = 'Website,Name,Email\nbrand.com,Brand 1,info@brand.com\n"https://www.shop.co.uk/collections/all",Shop Co,hello@gmail.com\nnot a site,2,\n';
+  assert.deepEqual(extractUrlsFromText(csv).split('\n'), ['brand.com', 'https://www.shop.co.uk/collections/all']);
+});

@@ -46,7 +46,24 @@ const RESOLVERS = [
  * @param {{ signal?: AbortSignal, fetchImpl?: typeof fetch, timeoutMs?: number }} opts
  * @returns {Promise<object>} Parsed DoH JSON.
  */
-async function fetchDoh(url, { signal, fetchImpl, timeoutMs = DNS_TIMEOUT_MS }) {
+/** At most this many DoH requests at once, so a big "all at once" run doesn't flood the resolver. */
+const MAX_DNS_IN_FLIGHT = 20;
+let dnsInFlight = 0;
+const dnsWaiting = [];
+
+async function fetchDoh(url, opts) {
+  if (dnsInFlight >= MAX_DNS_IN_FLIGHT) await new Promise((resolve) => dnsWaiting.push(resolve));
+  dnsInFlight++;
+  try {
+    return await fetchDohNow(url, opts);
+  } finally {
+    dnsInFlight--;
+    const next = dnsWaiting.shift();
+    if (next) next();
+  }
+}
+
+async function fetchDohNow(url, { signal, fetchImpl, timeoutMs = DNS_TIMEOUT_MS }) {
   const doFetch = fetchImpl || globalThis.fetch.bind(globalThis);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

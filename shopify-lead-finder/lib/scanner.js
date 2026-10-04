@@ -16,6 +16,9 @@ export const FETCH_TIMEOUT_MS = 12000;
 export const MAX_BYTES = 2 * 1024 * 1024;
 
 /** Pages checked on every store, in addition to the homepage. */
+/** The smaller page set used by Quick scan: the pages most likely to list an email. */
+export const QUICK_PATHS = ['/pages/contact', '/policies/contact-information'];
+
 export const EXTRA_PATHS = [
   '/pages/contact',
   '/pages/contact-us',
@@ -114,6 +117,19 @@ export function normalizeInput(input) {
 }
 
 /**
+ * Pull store addresses out of any text, such as an exported CSV or a
+ * spreadsheet column: URLs and bare domains are kept, one per line, while
+ * other cells (names, numbers, headers) and email addresses are ignored.
+ *
+ * @param {string} text
+ * @returns {string} Newline-separated URLs/domains.
+ */
+export function extractUrlsFromText(text) {
+  const re = /(?<![@\w.-])(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?![\w-]*@)(?:\/[^\s,;"'<>]*)?/gi;
+  return (String(text || '').match(re) || []).join('\n');
+}
+
+/**
  * Parse a pasted block of URLs (one per line or comma separated) into unique origins.
  *
  * @param {string} text
@@ -193,15 +209,84 @@ async function readCapped(res, maxBytes) {
   return out + decoder.decode();
 }
 
+/* ----------------------------- connection cap ----------------------------- */
+
+// Every request from every store goes through this shared limiter, so even
+// with hundreds (or "all") of stores scanning at once only `maxConnections`
+// requests are on the network at a time. The rest wait their turn, and their
+// 12s timeout only starts once they are actually sent.
+let maxConnections = Infinity;
+let activeConnections = 0;
+const waiting = [];
+
 /**
- * Fetch one page with a timeout. Never throws.
+ * Cap the number of simultaneous requests across all scans.
+ *
+ * @param {number} n Use Infinity for no cap (the default).
+ */
+export function setMaxConnections(n) {
+  maxConnections = n > 0 ? n : Infinity;
+  drainWaiting();
+}
+
+function drainWaiting() {
+  while (activeConnections < maxConnections && waiting.length) {
+    const next = waiting.shift();
+    activeConnections++;
+    next.resolve();
+  }
+}
+
+/** Wait for a free connection slot. Resolves false if the scan is stopped first. */
+function acquireConnection(signal) {
+  if (signal && signal.aborted) return Promise.resolve(false);
+  if (activeConnections < maxConnections) {
+    activeConnections++;
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const entry = {
+      resolve: () => {
+        if (signal) signal.removeEventListener('abort', onAbort);
+        resolve(true);
+      },
+    };
+    const onAbort = () => {
+      const i = waiting.indexOf(entry);
+      if (i !== -1) waiting.splice(i, 1);
+      resolve(false);
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    waiting.push(entry);
+  });
+}
+
+function releaseConnection() {
+  activeConnections--;
+  drainWaiting();
+}
+
+/**
+ * Fetch one page with a timeout. Never throws. Waits for a free slot when
+ * the connection cap (setMaxConnections) is reached.
  *
  * @param {string} url
  * @param {{ signal?: AbortSignal, fetchImpl?: typeof fetch, timeoutMs?: number, allowJson?: boolean }} [opts]
  *   `allowJson` also accepts JSON responses (for /meta.json and /products.json).
  * @returns {Promise<Page>}
  */
-export async function fetchPage(url, { signal, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS, allowJson = false } = {}) {
+export async function fetchPage(url, opts = {}) {
+  if (!(await acquireConnection(opts.signal))) {
+    return { ok: false, status: 0, url, headers: null, html: '', isHtml: false, contentType: '', error: 'aborted' };
+  }
+  try {
+    return await fetchPageNow(url, opts);
+  } finally {
+    releaseConnection();
+  }
+}
+
+async function fetchPageNow(url, { signal, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS, allowJson = false } = {}) {
   const doFetch = fetchImpl || globalThis.fetch.bind(globalThis);
   const controller = new AbortController();
   let timedOut = false;
@@ -1078,9 +1163,10 @@ function collectContacts(result, pages, hosts) {
  * @param {AbortSignal} [options.signal]   Abort to stop the scan and all in-flight requests.
  * @param {typeof fetch} [options.fetchImpl] Override fetch (used by tests).
  * @param {number} [options.timeoutMs]    Per-request timeout, default 12s.
+ * @param {boolean} [options.quick]       Quick scan: only QUICK_PATHS, no followed links (about 3x fewer requests).
  * @returns {Promise<ScanResult>}
  */
-export async function scanStore(input, { onProgress, signal, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+export async function scanStore(input, { onProgress, signal, fetchImpl, timeoutMs = FETCH_TIMEOUT_MS, quick = false } = {}) {
   const result = emptyResult(input);
   const progress = (p) => {
     try {
@@ -1144,9 +1230,10 @@ export async function scanStore(input, { onProgress, signal, fetchImpl, timeoutM
     }
 
     // 2. Known pages + up to 3 contact-ish links from the homepage, in parallel.
-    const queued = new Set(['/', ...EXTRA_PATHS.map((p) => p.toLowerCase())]);
-    const followed = findFollowLinks(home.html, origin, queued);
-    const paths = [...EXTRA_PATHS, ...followed];
+    const basePaths = quick ? QUICK_PATHS : EXTRA_PATHS;
+    const queued = new Set(['/', ...basePaths.map((p) => p.toLowerCase())]);
+    const followed = quick ? [] : findFollowLinks(home.html, origin, queued);
+    const paths = [...basePaths, ...followed];
     // Shopify stores also expose public catalog JSON, used for the size estimate.
     const jsonPaths = result.isShopify ? [META_PATH, PRODUCTS_PATH] : [];
     const total = paths.length + jsonPaths.length + 1;

@@ -31,7 +31,11 @@
 
       <div class="bulk-grid">
         <div class="field">
-          <label for="urls">Store URLs</label>
+          <div class="urls-head">
+            <label for="urls">Store URLs</label>
+            <button type="button" id="loadFileBtn" class="btn btn-small btn-ghost">Load from file (.txt, .csv)</button>
+            <input type="file" id="urlFile" accept=".txt,.csv,text/plain,text/csv" hidden>
+          </div>
           <textarea id="urls" rows="9" spellcheck="false" autocomplete="off" placeholder="brand.com&#10;https://another-store.com&#10;third-store.myshopify.com"></textarea>
           <p class="hint" id="urlCount" aria-live="polite">No URLs yet</p>
         </div>
@@ -39,14 +43,22 @@
         <div class="options">
           <fieldset class="field">
             <legend>Stores at a time</legend>
-            <p class="hint" id="speedHint">10 is a safe default. 20–30 is faster, but some stores may block you (shown as failed, and you can retry them).</p>
+            <p class="hint" id="speedHint">“All at once” starts every store in your list together (1000+ is fine). Requests are capped at 60 at a time behind the scenes so Chrome stays responsive. If stores start blocking you, retry the failed ones afterwards.</p>
             <div class="segmented" role="radiogroup">
-              <label><input type="radio" name="concurrency" value="4"><span>4</span></label>
               <label><input type="radio" name="concurrency" value="10" checked><span>10</span></label>
-              <label><input type="radio" name="concurrency" value="20"><span>20</span></label>
               <label><input type="radio" name="concurrency" value="30"><span>30</span></label>
+              <label><input type="radio" name="concurrency" value="100"><span>100</span></label>
+              <label><input type="radio" name="concurrency" value="all"><span>All at once</span></label>
             </div>
           </fieldset>
+
+          <label class="check">
+            <input type="checkbox" id="quickScan">
+            <span>
+              Quick scan
+              <small>Checks the homepage, contact page and store contact info only. About 3× faster for big lists, finds slightly fewer emails.</small>
+            </span>
+          </label>
 
           <label class="check">
             <input type="checkbox" id="shopifyOnly" checked>
