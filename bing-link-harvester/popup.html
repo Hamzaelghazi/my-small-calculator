@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bing Link Harvester</title>
+  <style>
+    /* ---- Design tokens ---------------------------------------------------- */
+    :root {
+      --bg: #f7f8fa;
+      --surface: #ffffff;
+      --border: #e3e6eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --danger: #dc2626;
+      --warn-bg: #fef3c7;
+      --warn-text: #92400e;
+      --ok: #059669;
+      --radius: 8px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1115;
+        --surface: #171a21;
+        --border: #2a2f3a;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #3b82f6;
+        --accent-hover: #60a5fa;
+        --warn-bg: #3a2a06;
+        --warn-text: #fcd34d;
+      }
+    }
+
+    /* ---- Layout ----------------------------------------------------------- */
+    * { box-sizing: border-box; }
+    body {
+      width: 440px;
+      margin: 0;
+      padding: 16px;
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+    h1 { font-size: 15px; margin: 0; letter-spacing: -0.01em; }
+    .pill {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 2px 8px; border-radius: 999px; background: var(--border); color: var(--muted);
+    }
+    .pill[data-status="running"] { background: var(--accent); color: #fff; }
+    .pill[data-status="paused"]  { background: var(--danger); color: #fff; }
+    .pill[data-status="done"]    { background: var(--ok); color: #fff; }
+
+    section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    label { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 6px; }
+    label small { font-weight: 400; color: var(--muted); }
+
+    textarea {
+      width: 100%;
+      resize: vertical;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font: 12px/1.5 var(--mono);
+      white-space: pre;
+      overflow-wrap: normal;
+    }
+    textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    #queries { height: 96px; }
+    #results { height: 150px; }
+
+    /* ---- Buttons ---------------------------------------------------------- */
+    .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    button {
+      flex: 1;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.danger { color: var(--danger); }
+    [hidden] { display: none !important; }
+
+    /* ---- Status ----------------------------------------------------------- */
+    #status { margin: 0; font-weight: 500; }
+    #status.warn { background: var(--warn-bg); color: var(--warn-text); padding: 8px; border-radius: 6px; }
+    .progress { height: 4px; background: var(--border); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+    .progress > div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    #log {
+      margin: 6px 0 0; max-height: 110px; overflow: auto;
+      font: 11px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap;
+    }
+    .hint { color: var(--muted); font-size: 11px; margin: 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Bing Link Harvester</h1>
+    <span id="statusPill" class="pill" data-status="idle">idle</span>
+  </header>
+
+  <!-- 1. Queries -->
+  <section>
+    <label for="queries">Bing queries <small>one per line</small></label>
+    <textarea id="queries" spellcheck="false"
+      placeholder='ip:23.227.38.65 loc:AU "garden" "free shipping"&#10;ip:23.227.38.65 site:com.au "bbq" reviews'></textarea>
+    <div class="row">
+      <button id="startBtn" class="primary">Start Harvest</button>
+      <button id="stopBtn" class="danger" hidden>Stop</button>
+      <button id="resumeBtn" class="primary" hidden>Resume</button>
+      <button id="showTabBtn" hidden>Show Bing tab</button>
+    </div>
+  </section>
+
+  <!-- 2. Status -->
+  <section>
+    <p id="status">Paste your queries and press Start Harvest.</p>
+    <div class="progress"><div id="progressBar"></div></div>
+    <details>
+      <summary>Activity log</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+
+  <!-- 3. Results -->
+  <section>
+    <label for="results">Collected URLs <small id="count">0 links</small></label>
+    <textarea id="results" readonly spellcheck="false"></textarea>
+    <div class="row">
+      <button id="copyBtn" disabled>Copy All Links</button>
+      <button id="csvBtn" disabled>Export CSV</button>
+      <button id="clearBtn" class="danger" disabled>Clear</button>
+    </div>
+  </section>
+
+  <p class="hint">Keep this popup open while harvesting — it keeps the background worker alive.</p>
+
+  <script src="popup.js"></script>
+</body>
+</html>

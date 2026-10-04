@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Bing Link Harvester",
+  "version": "1.0",
+  "description": "Collects every organic result URL from all paginated Bing pages for a list of queries.",
+  "permissions": ["tabs", "scripting", "storage", "activeTab"],
+  "host_permissions": [
+    "https://www.bing.com/*",
+    "https://*.bing.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Bing Link Harvester"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
