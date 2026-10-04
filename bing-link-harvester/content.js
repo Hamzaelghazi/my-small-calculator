@@ -12,6 +12,7 @@
  *     links:     string[]  // real destination URLs of organic results
  *     noResults: boolean   // Bing said "There are no results for …"
  *     captcha:   boolean   // Bing is showing a challenge / "unusual traffic"
+ *     snippet:   string    // start of the page text when captcha is true (for the log)
  *     rewritten: boolean   // Bing changed the query ("Including results for …")
  *     bingQuery: string    // query text in Bing's search box after loading
  *     pageUrl:   string    // the URL that was actually scraped
@@ -69,8 +70,11 @@
 
   /**
    * True when Bing is blocking us with a challenge page.
-   * The text check is only trusted when there are NO organic results, so a
-   * query that happens to contain the word "captcha" isn't mistaken for one.
+   * Kept strict so normal pages are never mistaken for a CAPTCHA:
+   *  - a page with organic results or a "no results" notice is never a CAPTCHA;
+   *  - on a normal results layout (#b_results present) only explicit challenge
+   *    phrases count; the bare word "captcha" counts only when the page isn't a
+   *    results page at all.
    *
    * @param {number} resultCount number of organic links found on the page
    */
@@ -80,10 +84,18 @@
     if (document.querySelector('#turingChallenge, iframe[src*="challenges.cloudflare.com"], iframe[src*="captcha"]')) {
       return true;
     }
-    if (resultCount > 0) return false;
+    if (resultCount > 0 || detectNoResults()) return false;
 
     const text = document.body ? document.body.innerText : '';
-    return /captcha|unusual traffic|verify you are a human|solve the challenge/i.test(text);
+    const strong = /unusual traffic|verify you are (a )?human|solve the challenge|one last step|are you a robot/i;
+    if (strong.test(text)) return true;
+    return !document.querySelector('#b_results') && /captcha/i.test(text);
+  }
+
+  /** First ~160 chars of visible text — logged when a CAPTCHA is detected, for diagnosis. */
+  function pageSnippet() {
+    const text = document.body ? document.body.innerText : '';
+    return text.replace(/\s+/g, ' ').trim().slice(0, 160);
   }
 
   /** The query text Bing actually shows in its search box (may differ from what we sent). */
@@ -110,11 +122,13 @@
     .map((a) => a.getAttribute('href'))
     .filter(Boolean)
     .map(decodeBingRedirect);
+  const captcha = detectCaptcha(links.length);
 
   return {
     links,
     noResults: detectNoResults(),
-    captcha: detectCaptcha(links.length),
+    captcha,
+    snippet: captcha ? pageSnippet() : '',
     rewritten: detectRewrite(),
     bingQuery: readBingQuery(),
     pageUrl: location.href,

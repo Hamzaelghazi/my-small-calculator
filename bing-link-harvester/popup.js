@@ -34,7 +34,9 @@ const el = {
   optEnforceSite: $('optEnforceSite'),
   optSkipRewritten: $('optSkipRewritten'),
   optMarket: $('optMarket'),
+  optDelay: $('optDelay'),
 };
+const OPTION_INPUTS = [el.optEnforceSite, el.optSkipRewritten, el.optMarket, el.optDelay];
 
 // Full-page mode: popup.html?full=1 opened in a normal tab. Same code, wider
 // layout, and it doesn't close when you click away or switch tabs.
@@ -59,8 +61,10 @@ port.onMessage.addListener((msg) => {
   if (msg.type === 'state') {
     render(msg.state);
   } else if (msg.type === 'captcha') {
-    // Spec: "pause and alert the user".
-    alert(`Bing Link Harvester\n\n${msg.message}`);
+    // No blocking alert(): the Bing tab is brought to the front, the status box
+    // turns yellow, and a short chime plays. Harvesting resumes by itself once
+    // the CAPTCHA is solved.
+    chime();
   }
 });
 
@@ -102,8 +106,9 @@ function render(state) {
     el.optEnforceSite.checked = settings.enforceSite !== false;
     el.optSkipRewritten.checked = settings.skipRewritten !== false;
     el.optMarket.value = settings.market || 'auto';
+    el.optDelay.value = settings.delaySec || 5;
   }
-  for (const input of [el.optEnforceSite, el.optSkipRewritten, el.optMarket]) input.disabled = isBusy;
+  for (const input of OPTION_INPUTS) input.disabled = isBusy;
 
   // Status pill + message.
   el.statusPill.textContent = status;
@@ -157,7 +162,7 @@ el.startBtn.addEventListener('click', () => {
 
 /** True once the user changes an option, so incoming state doesn't undo it. */
 let optionsTouched = false;
-for (const input of [el.optEnforceSite, el.optSkipRewritten, el.optMarket]) {
+for (const input of OPTION_INPUTS) {
   input.addEventListener('change', () => { optionsTouched = true; });
 }
 
@@ -167,6 +172,7 @@ function readSettings() {
     enforceSite: el.optEnforceSite.checked,
     skipRewritten: el.optSkipRewritten.checked,
     market: el.optMarket.value,
+    delaySec: Math.min(60, Math.max(2, Number(el.optDelay.value) || 5)),
   };
 }
 
@@ -190,9 +196,9 @@ el.fullBtn.addEventListener('click', async () => {
 el.stopBtn.addEventListener('click', () => send({ type: 'stop' }));
 el.resumeBtn.addEventListener('click', () => send({ type: 'resume' }));
 
-// Note: in the toolbar popup, focusing the Bing tab closes the popup. Reopen it
-// and press Resume after solving the CAPTCHA — state is persisted. The full-page
-// tab stays open, so just switch back to it.
+// Note: in the toolbar popup, focusing the Bing tab closes the popup. That's
+// fine — once the CAPTCHA is solved the harvest resumes by itself, and all
+// state is persisted. The full-page tab stays open, so just switch back to it.
 el.showTabBtn.addEventListener('click', () => send({ type: 'showTab' }));
 
 el.clearBtn.addEventListener('click', () => {
@@ -241,6 +247,26 @@ function downloadText(text, filename, mime) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Two short beeps to get attention when a CAPTCHA appears. Silently skipped if audio is blocked. */
+function chime() {
+  try {
+    const ctx = new AudioContext();
+    [0, 0.25].forEach((t) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime + t);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.2);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime + t);
+      osc.stop(ctx.currentTime + t + 0.2);
+    });
+    setTimeout(() => ctx.close(), 800);
+  } catch (err) {
+    console.warn('[Harvester popup] Could not play chime:', err);
+  }
 }
 
 /** Briefly swap a button's label as feedback. */

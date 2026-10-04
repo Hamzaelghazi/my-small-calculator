@@ -21,8 +21,11 @@ If you close the popup partway through, reopen it and the harvest picks up where
 
 ### CAPTCHA
 
-If Bing shows a challenge, the harvest pauses, an alert appears and the toolbar badge shows a red `!`.
-Click **Show Bing tab** and solve the challenge (switching tabs closes the popup), then reopen the popup and click **Resume**. The same page is tried again.
+If Bing shows a challenge, the harvest pauses and the Bing tab comes to the front. The toolbar badge shows a red `!` and a short chime plays.
+Solve the challenge in that tab. **Harvesting then resumes by itself**: the extension checks the tab every few seconds and re-tries the same page once the challenge is gone.
+If it doesn't pick up, open the popup and click **Resume now**.
+
+To get fewer CAPTCHAs, raise **Delay between pages** in Options (5–8 s works well). Each pause is randomised by up to +60% so the timing looks less robotic.
 
 ## Keeping results on-target
 
@@ -42,7 +45,7 @@ The activity log shows what was dropped and why.
 | `content.js` | Injected on demand. Reads `#b_results .b_algo h2 a`, decodes Bing's `/ck/a` redirect links and returns `{ links, noResults, captcha }` |
 | `popup.html/js` | UI, keep-alive port, copy and CSV export |
 
-Pages are fetched at `https://www.bing.com/search?q=QUERY&first=N` with `N = (page-1)*10 + 1`, waiting 3 s between pages.
+Pages are fetched at `https://www.bing.com/search?q=QUERY&first=N` with `N = (page-1)*10 + 1`, pausing between pages for the delay set in Options (default 5 s, randomised).
 A query ends when any of these happens:
 
 - Bing shows "no results"

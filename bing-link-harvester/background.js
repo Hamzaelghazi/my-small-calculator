@@ -26,7 +26,8 @@
 // ---------------------------------------------------------------------------
 
 const CONFIG = {
-  PAGE_DELAY_MS: 3000,        // pause between page loads (CAPTCHA avoidance)
+  DELAY_JITTER: 0.6,          // each pause is delaySec × (1 … 1.6), randomised so it looks less robotic
+  CAPTCHA_POLL_MS: 3000,      // how often to check whether you've solved a CAPTCHA
   PAGE_LOAD_TIMEOUT_MS: 30000, // give up on a page after this long
   SETTLE_DELAY_MS: 800,       // extra wait after "complete" for late DOM work
   MAX_PAGES_PER_QUERY: 50,    // Bing rarely serves more than ~50 pages
@@ -63,11 +64,13 @@ const STORAGE_KEY = 'harvestState';
  *                  collect nothing for that query and move on.
  * - market:        'auto' = use loc:XX from the query as Bing's country (cc=XX);
  *                  'none' = add nothing; otherwise a market code like 'en-AU'.
+ * - delaySec:      base pause between pages, in seconds (randomised upward).
  */
 const DEFAULT_SETTINGS = {
   enforceSite: true,
   skipRewritten: true,
   market: 'auto',
+  delaySec: 5,
 };
 
 // ---------------------------------------------------------------------------
@@ -78,6 +81,7 @@ const DEFAULT_SETTINGS = {
 function createInitialState() {
   return {
     status: 'idle',      // 'idle' | 'running' | 'paused' | 'done' | 'stopped'
+    pauseReason: null,   // 'captcha' while waiting for you to solve one
     runId: 0,
     queries: [],
     queryIndex: 0,       // 0-based index into `queries`
@@ -198,6 +202,7 @@ async function startHarvest(rawQueries, settings) {
 
   Object.assign(state, {
     status: 'running',
+    pauseReason: null,
     runId: state.runId + 1,
     queries,
     settings: { ...DEFAULT_SETTINGS, ...(settings || {}) },
@@ -219,6 +224,7 @@ async function startHarvest(rawQueries, settings) {
 async function stopHarvest() {
   if (state.status !== 'running' && state.status !== 'paused') return;
   state.status = 'stopped';
+  state.pauseReason = null;
   state.runId += 1; // invalidates the running loop
   state.message = `Stopped. ${state.links.length} unique links collected.`;
   state.finishedAt = Date.now();
@@ -227,16 +233,75 @@ async function stopHarvest() {
   await closeHarvestTab();
 }
 
-/** Continue after a CAPTCHA pause — re-tries the same page. */
-async function resumeHarvest() {
+/**
+ * Continue after a CAPTCHA pause — re-tries the same page.
+ * @param {boolean} auto true when called because the CAPTCHA was detected as solved
+ */
+async function resumeHarvest(auto = false) {
   if (state.status !== 'paused') return;
   state.status = 'running';
+  state.pauseReason = null;
   state.runId += 1;
-  state.message = 'Resuming…';
-  log('Resumed by user.');
+  state.message = auto ? 'CAPTCHA solved — resuming…' : 'Resuming…';
+  log(auto ? 'CAPTCHA solved — resuming automatically.' : 'Resumed by user.');
   await commit();
   startLoop();
 }
+
+// ---------------------------------------------------------------------------
+// CAPTCHA watch: resume by itself once the challenge is gone
+// ---------------------------------------------------------------------------
+
+let watchAlive = false;
+
+/**
+ * While paused for a CAPTCHA, re-check the Bing tab every few seconds. As soon
+ * as the page no longer looks like a challenge, the harvest resumes.
+ * (The tabs.onUpdated listener below also restarts this if the service worker
+ * was asleep, since solving a CAPTCHA reloads the page.)
+ */
+async function startCaptchaWatch() {
+  if (watchAlive) return;
+  watchAlive = true;
+  const myRunId = state.runId;
+  const waiting = () =>
+    state.runId === myRunId && state.status === 'paused' && state.pauseReason === 'captcha';
+  try {
+    while (waiting()) {
+      if (await captchaIsSolved()) {
+        if (waiting()) await resumeHarvest(true);
+        return;
+      }
+      await sleep(CONFIG.CAPTCHA_POLL_MS);
+    }
+  } finally {
+    watchAlive = false;
+  }
+}
+
+/** True when the harvest tab has finished loading a Bing page that isn't a challenge. */
+async function captchaIsSolved() {
+  if (state.tabId == null) return false;
+  try {
+    const tab = await chrome.tabs.get(state.tabId);
+    if (tab.status !== 'complete' || !/^https:\/\/([a-z0-9-]+\.)*bing\.com\//i.test(tab.url || '')) {
+      return false;
+    }
+    const result = await extractFromTab(state.tabId);
+    return !result.captcha;
+  } catch {
+    return false; // tab mid-navigation or closed — try again next tick
+  }
+}
+
+// Solving a CAPTCHA reloads the Bing tab: use that to wake up and check.
+chrome.tabs.onUpdated.addListener(async (tabId, info) => {
+  if (info.status !== 'complete') return;
+  await ready;
+  if (tabId === state.tabId && state.status === 'paused' && state.pauseReason === 'captcha') {
+    startCaptchaWatch();
+  }
+});
 
 /** Wipe results and return to idle. Not allowed mid-run. */
 async function clearResults() {
@@ -324,20 +389,23 @@ async function runLoop(myRunId) {
           state.page += 1;
         }
         await commit();
-        await sleep(CONFIG.PAGE_DELAY_MS);
+        await sleep(pageDelayMs());
         continue;
       }
       state.failures = 0;
 
-      // ---- CAPTCHA: pause and alert -----------------------------------------
+      // ---- CAPTCHA: pause, show the tab, resume by itself once solved ------
       if (result.captcha) {
         state.status = 'paused';
+        state.pauseReason = 'captcha';
         state.message =
-          `CAPTCHA detected on query ${state.queryIndex + 1}, page ${page}. ` +
-          'Solve it in the Bing tab, then press Resume.';
-        log(`Q${state.queryIndex + 1} p${page}: CAPTCHA — paused.`);
+          `CAPTCHA on query ${state.queryIndex + 1}, page ${page}. ` +
+          'Solve it in the Bing tab — harvesting continues automatically.';
+        log(`Q${state.queryIndex + 1} p${page}: CAPTCHA — paused. Page said: "${result.snippet || '?'}"`);
         await commit();
         broadcast({ type: 'captcha', message: state.message });
+        await showHarvestTab(); // bring the challenge in front of the user
+        startCaptchaWatch();
         return; // tab stays open so the user can solve it
       }
 
@@ -351,7 +419,7 @@ async function runLoop(myRunId) {
         advanceToNextQuery();
         state.message = progressMessage('Waiting');
         await commit();
-        if (state.queryIndex < state.queries.length) await sleep(CONFIG.PAGE_DELAY_MS);
+        if (state.queryIndex < state.queries.length) await sleep(pageDelayMs());
         continue;
       }
 
@@ -389,7 +457,7 @@ async function runLoop(myRunId) {
       await commit();
 
       // ---- Throttle before the next request ----------------------------------
-      if (state.queryIndex < state.queries.length) await sleep(CONFIG.PAGE_DELAY_MS);
+      if (state.queryIndex < state.queries.length) await sleep(pageDelayMs());
     }
   } finally {
     if (state.runId === myRunId) loopAlive = false;
@@ -651,6 +719,12 @@ async function extractFromTab(tabId) {
 // Misc
 // ---------------------------------------------------------------------------
 
+/** Randomised pause between pages: delaySec × (1 … 1 + DELAY_JITTER), min 2 s. */
+function pageDelayMs() {
+  const base = Math.max(2, Number(state.settings.delaySec) || DEFAULT_SETTINGS.delaySec);
+  return Math.round(base * 1000 * (1 + Math.random() * CONFIG.DELAY_JITTER));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -669,4 +743,13 @@ function updateBadge() {
   chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
 }
 
-ready.then(updateBadge);
+// On worker start-up: pick up where we left off.
+ready.then(() => {
+  updateBadge();
+  if (state.status === 'running' && !loopAlive) {
+    log('Service worker restarted — resuming harvest.');
+    startLoop();
+  } else if (state.status === 'paused' && state.pauseReason === 'captcha') {
+    startCaptchaWatch();
+  }
+});

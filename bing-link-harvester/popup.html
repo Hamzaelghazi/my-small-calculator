@@ -119,6 +119,10 @@
     .opt { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; margin: 6px 0 0; justify-content: flex-start; }
     .opt input { margin-top: 2px; }
     .opt span small { display: block; color: var(--muted); }
+    .opt input[type="number"] {
+      margin-left: auto; width: 64px; padding: 3px 6px; border-radius: 6px; font: inherit;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
     .opt select {
       margin-left: auto; padding: 3px 6px; border-radius: 6px; font: inherit;
       border: 1px solid var(--border); background: var(--bg); color: var(--text);
@@ -152,7 +156,7 @@
     <div class="row">
       <button id="startBtn" class="primary">Start Harvest</button>
       <button id="stopBtn" class="danger" hidden>Stop</button>
-      <button id="resumeBtn" class="primary" hidden>Resume</button>
+      <button id="resumeBtn" class="primary" hidden title="Harvesting resumes by itself once the CAPTCHA is solved — use this if it doesn't">Resume now</button>
       <button id="showTabBtn" hidden>Show Bing tab</button>
     </div>
   </section>
@@ -183,6 +187,11 @@
           <option value="en-NZ">New Zealand (en-NZ)</option>
           <option value="none">Don't set</option>
         </select>
+      </label>
+      <label class="opt">
+        <span>Delay between pages (seconds)
+          <small>Randomised up to +60%. Higher = fewer CAPTCHAs. 5–8 recommended.</small></span>
+        <input type="number" id="optDelay" min="2" max="60" step="1" value="5" />
       </label>
     </details>
   </section>
