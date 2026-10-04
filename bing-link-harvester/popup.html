@@ -44,7 +44,9 @@
       color: var(--text);
       font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     }
-    header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+    header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    header h1 { flex: 1; }
+    .icon-btn { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
     h1 { font-size: 15px; margin: 0; letter-spacing: -0.01em; }
     .pill {
       font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
@@ -112,13 +114,35 @@
       font: 11px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap;
     }
     .hint { color: var(--muted); font-size: 11px; margin: 0; }
+
+    /* ---- Options ---------------------------------------------------------- */
+    .opt { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; margin: 6px 0 0; justify-content: flex-start; }
+    .opt input { margin-top: 2px; }
+    .opt span small { display: block; color: var(--muted); }
+    .opt select {
+      margin-left: auto; padding: 3px 6px; border-radius: 6px; font: inherit;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    }
+
+    /* ---- Full-page mode (popup.html?full=1 opened in a tab) --------------- */
+    body.full { width: auto; max-width: 1100px; margin: 0 auto; padding: 24px; }
+    body.full .grid { display: grid; grid-template-columns: 380px 1fr; gap: 16px; align-items: start; }
+    body.full #queries { height: 200px; }
+    body.full #results { height: calc(100vh - 210px); min-height: 300px; }
+    body.full #log { max-height: 260px; }
+    body.full #fullBtn, body.full #keepOpenHint { display: none; }
+    @media (max-width: 800px) { body.full .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
     <h1>Bing Link Harvester</h1>
     <span id="statusPill" class="pill" data-status="idle">idle</span>
+    <button id="fullBtn" class="icon-btn" title="Open in a full browser tab (won't close when you click away)">⤢ Full page</button>
   </header>
+
+  <div class="grid">
+  <div>
 
   <!-- 1. Queries -->
   <section>
@@ -133,6 +157,36 @@
     </div>
   </section>
 
+  <!-- Options: keep results on-target -->
+  <section>
+    <details id="optionsBox" open>
+      <summary>Options — keep results on-target</summary>
+      <label class="opt">
+        <input type="checkbox" id="optEnforceSite" checked />
+        <span>Enforce <code>site:</code> operator
+          <small>Drop results whose domain doesn't match site: / -site: in the query.</small></span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="optSkipRewritten" checked />
+        <span>Skip query if Bing changes it
+          <small>"Including results for…", "Did you mean…" — those results are off-topic.</small></span>
+      </label>
+      <label class="opt">
+        <span>Bing market
+          <small>Auto uses loc:XX from the query.</small></span>
+        <select id="optMarket">
+          <option value="auto">Auto (from loc:)</option>
+          <option value="en-AU">Australia (en-AU)</option>
+          <option value="en-US">United States (en-US)</option>
+          <option value="en-GB">United Kingdom (en-GB)</option>
+          <option value="en-CA">Canada (en-CA)</option>
+          <option value="en-NZ">New Zealand (en-NZ)</option>
+          <option value="none">Don't set</option>
+        </select>
+      </label>
+    </details>
+  </section>
+
   <!-- 2. Status -->
   <section>
     <p id="status">Paste your queries and press Start Harvest.</p>
@@ -142,6 +196,9 @@
       <pre id="log"></pre>
     </details>
   </section>
+
+  </div>
+  <div>
 
   <!-- 3. Results -->
   <section>
@@ -154,7 +211,10 @@
     </div>
   </section>
 
-  <p class="hint">Keep this popup open while harvesting — it keeps the background worker alive.</p>
+  </div>
+  </div>
+
+  <p class="hint" id="keepOpenHint">Keep this popup open while harvesting — or click <b>⤢ Full page</b> so it can't close by accident.</p>
 
   <script src="popup.js"></script>
 </body>

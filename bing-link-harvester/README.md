@@ -14,6 +14,7 @@ plain-text list of URLs, plus a one-column CSV export (`url`).
 
 1. Paste queries into the popup, one per line.
 2. Click **Start Harvest**, then **leave the popup open**. The popup keeps the service worker alive.
+   Or click **⤢ Full page** to run the harvester in a normal browser tab. That tab doesn't close when you click away, which is the easier way to run long harvests.
 3. When it finishes, click **Copy All Links** or **Export CSV**.
 
 If you close the popup partway through, reopen it and the harvest picks up where it stopped (progress is saved in `chrome.storage.local`).
@@ -22,6 +23,16 @@ If you close the popup partway through, reopen it and the harvest picks up where
 
 If Bing shows a challenge, the harvest pauses, an alert appears and the toolbar badge shows a red `!`.
 Click **Show Bing tab** and solve the challenge (switching tabs closes the popup), then reopen the popup and click **Resume**. The same page is tried again.
+
+## Keeping results on-target
+
+On automated searches, Bing often ignores operators (`ip:`, `site:`, quoted terms) or rewrites the query. It then returns pages that have nothing to do with what you asked for. The **Options** panel guards against this:
+
+- **Enforce `site:` operator**: drops any result whose domain doesn't match the query's `site:` / `-site:` operators. If two pages in a row contain only off-target results, the harvester decides Bing is ignoring `site:` and moves to the next query.
+- **Skip query if Bing changes it**: if Bing shows "Including results for…" or "Did you mean…", or its search box holds a different query from yours, nothing is collected for that query.
+- **Bing market**: **Auto** turns `loc:AU` into `&cc=AU` on the request. You can also pick a market such as `en-AU`.
+
+The activity log shows what was dropped and why.
 
 ## How it works
 

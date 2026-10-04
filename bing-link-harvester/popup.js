@@ -30,7 +30,19 @@ const el = {
   copyBtn: $('copyBtn'),
   csvBtn: $('csvBtn'),
   clearBtn: $('clearBtn'),
+  fullBtn: $('fullBtn'),
+  optEnforceSite: $('optEnforceSite'),
+  optSkipRewritten: $('optSkipRewritten'),
+  optMarket: $('optMarket'),
 };
+
+// Full-page mode: popup.html?full=1 opened in a normal tab. Same code, wider
+// layout, and it doesn't close when you click away or switch tabs.
+const IS_FULL_PAGE = new URLSearchParams(location.search).has('full');
+if (IS_FULL_PAGE) {
+  document.body.classList.add('full');
+  document.querySelector('details:not(#optionsBox)').open = true; // show the activity log
+}
 
 /** Latest state received from the background worker. */
 let currentState = null;
@@ -84,6 +96,15 @@ function render(state) {
   }
   el.queries.disabled = isBusy;
 
+  // Options: mirror saved settings (but never overwrite while the user is editing).
+  const settings = state.settings || {};
+  if (!optionsTouched) {
+    el.optEnforceSite.checked = settings.enforceSite !== false;
+    el.optSkipRewritten.checked = settings.skipRewritten !== false;
+    el.optMarket.value = settings.market || 'auto';
+  }
+  for (const input of [el.optEnforceSite, el.optSkipRewritten, el.optMarket]) input.disabled = isBusy;
+
   // Status pill + message.
   el.statusPill.textContent = status;
   el.statusPill.dataset.status = status;
@@ -103,7 +124,7 @@ function render(state) {
   el.startBtn.hidden = isBusy;
   el.stopBtn.hidden = !isBusy;
   el.resumeBtn.hidden = !isPaused;
-  el.showTabBtn.hidden = !(isPaused && state.tabId != null);
+  el.showTabBtn.hidden = !(isBusy && state.tabId != null);
 
   // Results — only rewrite the textarea when the content changed, so a user's
   // selection/scroll isn't reset on every broadcast.
@@ -131,14 +152,47 @@ el.startBtn.addEventListener('click', () => {
     el.queries.focus();
     return;
   }
-  send({ type: 'start', queries });
+  send({ type: 'start', queries, settings: readSettings() });
+});
+
+/** True once the user changes an option, so incoming state doesn't undo it. */
+let optionsTouched = false;
+for (const input of [el.optEnforceSite, el.optSkipRewritten, el.optMarket]) {
+  input.addEventListener('change', () => { optionsTouched = true; });
+}
+
+/** Current option values from the form. */
+function readSettings() {
+  return {
+    enforceSite: el.optEnforceSite.checked,
+    skipRewritten: el.optSkipRewritten.checked,
+    market: el.optMarket.value,
+  };
+}
+
+// Open the same UI in a full tab (reuse it if one is already open), then close the popup.
+el.fullBtn.addEventListener('click', async () => {
+  const url = chrome.runtime.getURL('popup.html?full=1');
+  try {
+    const [existing] = await chrome.tabs.query({ url });
+    if (existing) {
+      await chrome.tabs.update(existing.id, { active: true });
+      await chrome.windows.update(existing.windowId, { focused: true });
+    } else {
+      await chrome.tabs.create({ url });
+    }
+  } catch (err) {
+    console.error('[Harvester popup] Could not open full page:', err);
+  }
+  window.close();
 });
 
 el.stopBtn.addEventListener('click', () => send({ type: 'stop' }));
 el.resumeBtn.addEventListener('click', () => send({ type: 'resume' }));
 
-// Note: focusing the Bing tab closes this popup. Reopen it and press Resume
-// after solving the CAPTCHA — state is persisted, nothing is lost.
+// Note: in the toolbar popup, focusing the Bing tab closes the popup. Reopen it
+// and press Resume after solving the CAPTCHA — state is persisted. The full-page
+// tab stays open, so just switch back to it.
 el.showTabBtn.addEventListener('click', () => send({ type: 'showTab' }));
 
 el.clearBtn.addEventListener('click', () => {

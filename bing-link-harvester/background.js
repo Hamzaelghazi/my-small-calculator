@@ -31,6 +31,7 @@ const CONFIG = {
   SETTLE_DELAY_MS: 800,       // extra wait after "complete" for late DOM work
   MAX_PAGES_PER_QUERY: 50,    // Bing rarely serves more than ~50 pages
   MAX_CONSECUTIVE_FAILURES: 3, // failed page loads in a row before skipping the query
+  MAX_OFF_TARGET_PAGES: 2,    // pages in a row with only off-target results before skipping the query
   RESULTS_PER_PAGE: 10,       // Bing's `first` param steps by 10
   LOG_LIMIT: 60,              // activity-log lines kept in state
 };
@@ -52,6 +53,23 @@ const BLOCKED_DOMAINS = [
 
 const STORAGE_KEY = 'harvestState';
 
+/**
+ * User options (set in the popup, saved with the state).
+ * - enforceSite:   drop results that don't match the query's site: / -site:
+ *                  operators. Bing often ignores operators on automated
+ *                  searches, so this check is done again here.
+ * - skipRewritten: if Bing changes the query ("Including results for …",
+ *                  "Did you mean …", or a different query in its search box),
+ *                  collect nothing for that query and move on.
+ * - market:        'auto' = use loc:XX from the query as Bing's country (cc=XX);
+ *                  'none' = add nothing; otherwise a market code like 'en-AU'.
+ */
+const DEFAULT_SETTINGS = {
+  enforceSite: true,
+  skipRewritten: true,
+  market: 'auto',
+};
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -66,7 +84,9 @@ function createInitialState() {
     page: 1,             // 1-based Bing page number for the current query
     querySeen: [],       // raw URLs already seen for the CURRENT query (repeat detection)
     failures: 0,         // consecutive page-load failures for the current query
+    offTargetPages: 0,   // consecutive pages where every result failed the site: check
     links: [],           // final, cleaned, globally unique URLs
+    settings: { ...DEFAULT_SETTINGS },
     tabId: null,
     message: 'Paste your queries and press Start Harvest.',
     log: [],
@@ -81,6 +101,7 @@ let state = createInitialState();
 const ready = chrome.storage.local.get(STORAGE_KEY).then((stored) => {
   if (stored && stored[STORAGE_KEY]) {
     state = { ...createInitialState(), ...stored[STORAGE_KEY] };
+    state.settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
   }
 }).catch((err) => console.error('[Harvester] Failed to restore state:', err));
 
@@ -146,7 +167,7 @@ async function handlePopupMessage(msg) {
       // No-op: receiving a message resets the service worker idle timer.
       return;
     case 'start':
-      return startHarvest(msg.queries);
+      return startHarvest(msg.queries, msg.settings);
     case 'stop':
       return stopHarvest();
     case 'resume':
@@ -165,7 +186,7 @@ async function handlePopupMessage(msg) {
 // ---------------------------------------------------------------------------
 
 /** Start a brand-new harvest. Previously collected links are kept and merged into. */
-async function startHarvest(rawQueries) {
+async function startHarvest(rawQueries, settings) {
   const queries = (rawQueries || [])
     .map((q) => String(q).trim())
     .filter(Boolean);
@@ -179,10 +200,12 @@ async function startHarvest(rawQueries) {
     status: 'running',
     runId: state.runId + 1,
     queries,
+    settings: { ...DEFAULT_SETTINGS, ...(settings || {}) },
     queryIndex: 0,
     page: 1,
     querySeen: [],
     failures: 0,
+    offTargetPages: 0,
     message: 'Starting…',
     startedAt: Date.now(),
     finishedAt: null,
@@ -219,8 +242,8 @@ async function resumeHarvest() {
 async function clearResults() {
   if (state.status === 'running') return;
   await closeHarvestTab();
-  const queries = state.queries; // keep the textarea content handy
-  state = { ...createInitialState(), runId: state.runId + 1, queries };
+  const { queries, settings } = state; // keep the textarea content and options
+  state = { ...createInitialState(), runId: state.runId + 1, queries, settings };
   await commit();
 }
 
@@ -270,7 +293,7 @@ async function runLoop(myRunId) {
 
       const query = state.queries[state.queryIndex];
       const page = state.page;
-      const url = buildSearchUrl(query, page);
+      const url = buildSearchUrl(query, page, state.settings);
 
       state.message = progressMessage('Loading');
       await commit();
@@ -318,18 +341,40 @@ async function runLoop(myRunId) {
         return; // tab stays open so the user can solve it
       }
 
+      // ---- Bing changed the query: its results are off-target -------------
+      const changedTo = queryWasChanged(query, result);
+      if (changedTo !== null && state.settings.skipRewritten) {
+        log(
+          `Q${state.queryIndex + 1} p${page}: Bing changed the query` +
+          (changedTo ? ` to "${changedTo}"` : '') + ' — skipped, nothing collected.'
+        );
+        advanceToNextQuery();
+        state.message = progressMessage('Waiting');
+        await commit();
+        if (state.queryIndex < state.queries.length) await sleep(CONFIG.PAGE_DELAY_MS);
+        continue;
+      }
+
       // ---- Merge links -------------------------------------------------------
-      const { newForQuery, added } = mergeLinks(result.links);
+      const filters = state.settings.enforceSite ? parseSiteFilters(query) : null;
+      const { newForQuery, added, offTarget } = mergeLinks(result.links, filters);
       log(
         `Q${state.queryIndex + 1} p${page}: ${result.links.length} results, ` +
-        `${added} new stored (${state.links.length} total).`
+        `${added} new stored` +
+        (offTarget ? `, ${offTarget} off-target dropped` : '') +
+        ` (${state.links.length} total).`
       );
+
+      // A page where EVERY result failed the site: check means Bing is ignoring it.
+      const allOffTarget = result.links.length > 0 && offTarget === result.links.length;
+      state.offTargetPages = allOffTarget ? state.offTargetPages + 1 : 0;
 
       // ---- Decide whether this query is finished ----------------------------
       const stopReason =
         result.noResults ? 'no results'
         : result.links.length === 0 ? 'empty page'
         : newForQuery === 0 ? 'no new links (repeating)'
+        : state.offTargetPages >= CONFIG.MAX_OFF_TARGET_PAGES ? 'Bing is ignoring the site: operator'
         : page >= CONFIG.MAX_PAGES_PER_QUERY ? `page limit (${CONFIG.MAX_PAGES_PER_QUERY})`
         : null;
 
@@ -367,6 +412,7 @@ function advanceToNextQuery() {
   state.page = 1;
   state.querySeen = [];
   state.failures = 0;
+  state.offTargetPages = 0;
 }
 
 /** e.g. "Query 1/5 — Page 3 — Found 12 links…" */
@@ -379,27 +425,97 @@ function progressMessage(verb) {
 // URL helpers
 // ---------------------------------------------------------------------------
 
-/** Page 1 -> first=1, page 2 -> first=11, page 3 -> first=21 … */
-function buildSearchUrl(query, page) {
+/**
+ * Page 1 -> first=1, page 2 -> first=11, page 3 -> first=21 …
+ * Adds Bing's country (`cc`) / market (`setmkt`) params per the market setting.
+ */
+function buildSearchUrl(query, page, settings = DEFAULT_SETTINGS) {
   const first = (page - 1) * CONFIG.RESULTS_PER_PAGE + 1;
-  return `https://www.bing.com/search?q=${encodeURIComponent(query)}&first=${first}`;
+  let url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&first=${first}`;
+
+  const market = settings.market || 'auto';
+  if (market === 'auto') {
+    const loc = query.match(/(?:^|\s)loc:([a-z]{2})\b/i);
+    if (loc) url += `&cc=${loc[1].toUpperCase()}`;
+  } else if (market !== 'none') {
+    const country = market.split('-')[1] || '';
+    url += `&setmkt=${encodeURIComponent(market)}&cc=${encodeURIComponent(country)}`;
+  }
+  return url;
+}
+
+/** Lower-case, unify quotes and collapse whitespace so trivial differences don't count. */
+function normalizeQuery(q) {
+  return String(q || '')
+    .toLowerCase()
+    .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Did Bing search for something other than what we asked?
+ * @returns {string|null} null = query is intact; otherwise what Bing searched
+ *   for instead ('' if it only showed an "Including results for" notice).
+ */
+function queryWasChanged(query, result) {
+  if (result.bingQuery && normalizeQuery(result.bingQuery) !== normalizeQuery(query)) {
+    return result.bingQuery;
+  }
+  return result.rewritten ? '' : null;
+}
+
+/**
+ * Pull site: / -site: operators out of a query.
+ *   'ip:1.2.3.4 site:com.au "bbq"'  -> { include: ['com.au'], exclude: [] }
+ * Several site: operators (usually joined with OR) mean "any of these".
+ * @returns {{include: string[], exclude: string[]}|null} null when there are none.
+ */
+function parseSiteFilters(query) {
+  const include = [];
+  const exclude = [];
+  const re = /(?:^|[\s(])(-?)site:"?([^\s")]+)"?/gi;
+  let m;
+  while ((m = re.exec(query))) {
+    const domain = m[2].toLowerCase().replace(/^\.+|\/.*$/g, '').replace(/^www\./, '');
+    if (!domain) continue;
+    (m[1] === '-' ? exclude : include).push(domain);
+  }
+  return include.length || exclude.length ? { include, exclude } : null;
+}
+
+/** True if `host` is `domain` or a subdomain of it (com.au matches shop.com.au). */
+function hostMatches(host, domain) {
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
+/** True if the URL's host satisfies the query's site: filters. */
+function passesSiteFilters(hostname, filters) {
+  if (!filters) return true;
+  const host = hostname.toLowerCase().replace(/^www\./, '');
+  if (filters.exclude.some((d) => hostMatches(host, d))) return false;
+  return filters.include.length === 0 || filters.include.some((d) => hostMatches(host, d));
 }
 
 /**
  * Normalise a URL for storage: http(s) only, no #fragment.
- * @returns {string|null} cleaned URL, or null if invalid/blocked.
+ * @param {string} raw
+ * @param {{include: string[], exclude: string[]}|null} filters site: filters for the query
+ * @returns {{url: string|null, offTarget: boolean}} url is null if invalid/blocked/off-target.
  */
-function cleanUrl(raw) {
+function cleanUrl(raw, filters) {
   let url;
   try {
     url = new URL(raw);
   } catch {
-    return null;
+    return { url: null, offTarget: false };
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-  if (isBlockedHost(url.hostname)) return null;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return { url: null, offTarget: false };
+  if (isBlockedHost(url.hostname)) return { url: null, offTarget: false };
+  if (!passesSiteFilters(url.hostname, filters)) return { url: null, offTarget: true };
   url.hash = '';
-  return url.href;
+  return { url: url.href, offTarget: false };
 }
 
 /** True if `hostname` is (a subdomain of) any BLOCKED_DOMAINS entry. */
@@ -413,19 +529,22 @@ function isBlockedHost(hostname) {
  * - `newForQuery`: raw links not seen earlier for this query. When this hits 0,
  *   Bing is just repeating its last page, so the query is finished.
  * - `added`: cleaned links that were new to the global result list.
+ * - `offTarget`: links dropped because they don't match the query's site: filters.
  */
-function mergeLinks(rawLinks) {
+function mergeLinks(rawLinks, filters) {
   const seenForQuery = new Set(state.querySeen);
   const global = new Set(state.links);
   let newForQuery = 0;
   let added = 0;
+  let offTarget = 0;
 
   for (const raw of rawLinks) {
     if (!seenForQuery.has(raw)) {
       seenForQuery.add(raw);
       newForQuery += 1;
     }
-    const clean = cleanUrl(raw);
+    const { url: clean, offTarget: isOff } = cleanUrl(raw, filters);
+    if (isOff) offTarget += 1;
     if (clean && !global.has(clean)) {
       global.add(clean);
       state.links.push(clean);
@@ -434,7 +553,7 @@ function mergeLinks(rawLinks) {
   }
 
   state.querySeen = Array.from(seenForQuery);
-  return { newForQuery, added };
+  return { newForQuery, added, offTarget };
 }
 
 // ---------------------------------------------------------------------------

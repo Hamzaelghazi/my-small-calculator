@@ -12,6 +12,8 @@
  *     links:     string[]  // real destination URLs of organic results
  *     noResults: boolean   // Bing said "There are no results for …"
  *     captcha:   boolean   // Bing is showing a challenge / "unusual traffic"
+ *     rewritten: boolean   // Bing changed the query ("Including results for …")
+ *     bingQuery: string    // query text in Bing's search box after loading
  *     pageUrl:   string    // the URL that was actually scraped
  *   }
  */
@@ -84,6 +86,24 @@
     return /captcha|unusual traffic|verify you are a human|solve the challenge/i.test(text);
   }
 
+  /** The query text Bing actually shows in its search box (may differ from what we sent). */
+  function readBingQuery() {
+    const box = document.querySelector('#sb_form_q, input[name="q"], textarea[name="q"]');
+    return box ? String(box.value || '').trim() : '';
+  }
+
+  /**
+   * True when Bing replaced or loosened the query, e.g.
+   *   "Including results for …", "Showing results for …", "Did you mean …".
+   * Those results are usually unrelated to the operators you typed.
+   */
+  function detectRewrite() {
+    if (document.querySelector('#sp_requery, #sp_recourse, .sp_requery')) return true;
+    const top = document.querySelector('#b_results');
+    const text = top ? top.innerText.slice(0, 600) : '';
+    return /Including results for|Showing results for|Results are for|Did you mean/i.test(text);
+  }
+
   // ---- Extract -------------------------------------------------------------
   const anchors = Array.from(document.querySelectorAll(RESULT_LINK_SELECTOR));
   const links = anchors
@@ -95,6 +115,8 @@
     links,
     noResults: detectNoResults(),
     captcha: detectCaptcha(links.length),
+    rewritten: detectRewrite(),
+    bingQuery: readBingQuery(),
     pageUrl: location.href,
   };
 })();
