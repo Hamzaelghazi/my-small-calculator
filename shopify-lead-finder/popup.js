@@ -1,7 +1,18 @@
 import { scanStore, normalizeInput, rescoreLead, leadPhoneDetails, PHONE_TYPES } from './lib/scanner.js';
 import { getLeads, saveLead, onLeadsChanged, getHistory, recordScans } from './lib/storage.js';
 import { buildScanIndex, describePrevious } from './lib/history.js';
-import { isCrazyDomainsHosted, hostingLabel, getCrazyDomainsOnly, setCrazyDomainsOnly } from './lib/dns.js';
+import {
+  isCrazyDomainsHosted,
+  hostingLabel,
+  getCrazyDomainsOnly,
+  setCrazyDomainsOnly,
+  checkEmailDomains,
+  cachedDsResult,
+  dsLabel,
+  getDsOnly,
+  setDsOnly,
+} from './lib/dns.js';
+import { applyMailFilter } from './lib/filters.js';
 import { h, copyButton, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -107,11 +118,36 @@ function renderHero(res) {
       tagBadge(best.tag),
       h('span', { text: `Score ${best.score}` }),
       where ? h('span', { text: `Found on ${where}` }) : null
-    )
+    ),
+    mailEvidence(best)
+  );
+}
+
+/**
+ * ds.network badge plus the matched mail server, shown only when the
+ * ds.network filter is on (emails then carry a `mail` result).
+ */
+function mailEvidence(e) {
+  if (!e.mail || !e.mail.detected) return null;
+  return h(
+    'div',
+    { class: 'mail-evidence' },
+    h('span', { class: 'badge badge-hosting', text: dsLabel(e.mail) }),
+    h('span', { class: 'mono', text: e.mail.evidence })
   );
 }
 
 function renderEmptyEmails(res) {
+  if (res.dsHidden) {
+    return h(
+      'div',
+      { class: 'state' },
+      h('h2', { text: 'No emails hosted on ds.network' }),
+      h('p', {
+        text: `${res.dsHidden} email${res.dsHidden === 1 ? ' was' : 's were'} found, but none use ds.network mail servers. Turn off the filter to see them.`,
+      })
+    );
+  }
   const links = [];
   if (res.url) links.push(linkButton('Contact page', `${res.url}/pages/contact`));
   if (safeHref(res.socials.instagram)) links.push(linkButton('Instagram', res.socials.instagram));
@@ -140,7 +176,8 @@ function renderOthers(res) {
           { class: 'email-item' },
           h('span', { class: 'email-addr', text: e.email }),
           copyButton(e.email),
-          h('span', { class: 'email-meta' }, tagBadge(e.tag), h('span', { text: `Score ${e.score}` }))
+          h('span', { class: 'email-meta' }, tagBadge(e.tag), h('span', { text: `Score ${e.score}` })),
+          mailEvidence(e)
         )
       )
     )
@@ -233,6 +270,25 @@ function renderSocials(res) {
   const links = socialLinks(res.socials);
   if (!links) return null;
   return h('section', { class: 'section' }, h('h3', { class: 'section-title', text: 'Socials' }), links);
+}
+
+/**
+ * Render a result through the optional ds.network email filter.
+ * Off: exactly what render() always showed. On: look up the MX records of
+ * each email's domain (cached), then show only the emails that match.
+ * `current` itself is never changed, so saving keeps every email.
+ */
+async function show(res) {
+  if (!$('dsOnly').checked || res.status === 'error' || !res.emails.length) {
+    render(res);
+    return;
+  }
+  $('progressText').textContent = 'Checking mail servers…';
+  $('progress').hidden = false;
+  await checkEmailDomains([res]);
+  $('progress').hidden = true;
+  const filtered = applyMailFilter(res, cachedDsResult);
+  render(filtered || { ...res, emails: [], bestEmail: null, dsHidden: res.emails.length });
 }
 
 function render(res) {
@@ -334,7 +390,7 @@ async function scan() {
   btn.disabled = false;
   btn.textContent = 'Scan again';
   current = res;
-  render(res);
+  await show(res);
   setSaved(false);
   renderSeen(true);
 }
@@ -365,6 +421,12 @@ async function init() {
   // The toggle is shared with the bulk scanner through chrome.storage.local.
   $('cdOnly').checked = await getCrazyDomainsOnly();
   $('cdOnly').addEventListener('change', () => setCrazyDomainsOnly($('cdOnly').checked));
+  // ds.network email filter: re-filter what's on screen when it changes. No re-scan needed.
+  $('dsOnly').checked = await getDsOnly();
+  $('dsOnly').addEventListener('change', async () => {
+    await setDsOnly($('dsOnly').checked);
+    if (current) await show(current);
+  });
   $('saveBtn').addEventListener('click', save);
   $('openDashboard').addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
@@ -405,7 +467,7 @@ async function init() {
   const saved = await findSaved(leads);
   if (saved) {
     current = rescoreLead(saved);
-    render(current);
+    await show(current);
     setSaved(true);
   }
   await loadPrevious();

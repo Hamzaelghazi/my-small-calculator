@@ -265,11 +265,47 @@ function loadCache() {
   return loading;
 }
 
+/** Load the cache from storage now, so cachedDsResult() can answer synchronously. */
+export function preloadDnsCache() {
+  return loadCache();
+}
+
+let persistTimer = null;
+
+/** Save the cache to storage, at most once a second (a big run adds many entries quickly). */
 function persistCache() {
-  if (!hasChromeStorage()) return;
-  writeQueue = writeQueue
-    .then(() => chrome.storage.local.set({ [CACHE_KEY]: memCache }))
-    .catch(() => {});
+  if (!hasChromeStorage() || persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    writeQueue = writeQueue.then(() => chrome.storage.local.set({ [CACHE_KEY]: memCache })).catch(() => {});
+  }, 1000);
+}
+
+/**
+ * Run `lookup(name)` once per cache key: reuse a fresh cached answer, share an
+ * in-flight lookup, and cache only successful answers (errors are retried).
+ *
+ * @param {string} key   Cache key, e.g. "ds:brand.com".
+ * @param {() => Promise<HostingCheck>} lookup
+ * @returns {Promise<HostingCheck>}
+ */
+async function cachedLookup(key, lookup) {
+  const cache = await loadCache();
+  const hit = cache[key];
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.result;
+
+  if (inFlight.has(key)) return inFlight.get(key);
+  const p = lookup()
+    .then((result) => {
+      if (!result.error) {
+        cache[key] = { result, at: Date.now() };
+        persistCache();
+      }
+      return result;
+    })
+    .finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
 }
 
 /**
@@ -284,23 +320,144 @@ function persistCache() {
 export async function isCrazyDomainsHosted(domain, opts = {}) {
   const key = domainCandidates(domain)[0];
   if (!key) return { detected: false, error: 'Invalid domain' };
+  return cachedLookup(key, () => lookupCrazyDomains(key, opts));
+}
 
-  const cache = await loadCache();
-  const hit = cache[key];
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.result;
+/* -------------------------------------------------------------------------- */
+/* ds.network mail hosting (email filter)                                     */
+/* -------------------------------------------------------------------------- */
 
-  if (inFlight.has(key)) return inFlight.get(key);
-  const p = lookupCrazyDomains(key, opts)
-    .then((result) => {
-      if (!result.error) {
-        cache[key] = { result, at: Date.now() };
-        persistCache();
-      }
-      return result;
+// Dreamscape Networks runs the mail platform behind rc.ds.network for several
+// brands (Crazy Domains, Vodien, ...). These patterns match its mail and DNS
+// hostnames, so the filter follows the infrastructure, not the brand.
+const DS_PATTERNS = [/ds\.network/i, /crazydomains/i, /syrahost/i, /premium\.exchange/i, /xion\.oxcs\.net/i];
+
+/**
+ * Does this email domain's mail go through ds.network?
+ *
+ *   1. MX records of the domain itself (the part after "@"). A matching MX
+ *      hostname gives { detected: true, evidence, type: 'mx' }.
+ *   2. Only if the domain has no MX records (or the MX lookup failed), its NS
+ *      records are checked against the same patterns: type 'nameserver'.
+ *
+ * The domain name text is never used as evidence: "designstuff.com" matches
+ * only because its MX records point at ds.network. Never throws; when both
+ * lookups fail it returns { detected: false, error }.
+ *
+ * @param {string} domain Email domain, e.g. "designstuff.com".
+ * @param {{ signal?: AbortSignal, fetchImpl?: typeof fetch, timeoutMs?: number }} [opts]
+ * @returns {Promise<HostingCheck>}
+ */
+export async function lookupDsNetwork(domain, opts = {}) {
+  const name = String(domain || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(name)) return { detected: false, error: 'Invalid domain' };
+
+  let mx = [];
+  let mxError = null;
+  try {
+    mx = await getMxRecords(name, opts);
+  } catch (err) {
+    mxError = err;
+  }
+  const mxHit = mx.find((h) => DS_PATTERNS.some((re) => re.test(h)));
+  if (mxHit) return { detected: true, evidence: mxHit, type: 'mx' };
+  // MX records exist but point elsewhere (Google, Outlook, ...): mail isn't on ds.network.
+  if (mx.length) return { detected: false };
+
+  // No MX records, or the MX lookup failed: fall back to nameservers.
+  try {
+    const ns = await getNsRecords(name, opts);
+    const nsHit = ns.find((h) => DS_PATTERNS.some((re) => re.test(h)));
+    if (nsHit) return { detected: true, evidence: nsHit, type: 'nameserver' };
+  } catch (err) {
+    if (mxError) return { detected: false, error: err.message || 'DNS lookup failed' };
+  }
+  return { detected: false };
+}
+
+/**
+ * Cached version of lookupDsNetwork() (same cache and 24h lifetime as the
+ * Crazy Domains check, but its own keys).
+ *
+ * @param {string} domain Email domain.
+ * @param {object} [opts]
+ * @returns {Promise<HostingCheck>}
+ */
+export function isDsNetworkHosted(domain, opts = {}) {
+  const name = String(domain || '').trim().toLowerCase();
+  return cachedLookup(`ds:${name}`, () => lookupDsNetwork(name, opts));
+}
+
+/**
+ * The cached ds.network answer for a domain, without any network request.
+ * Returns undefined until isDsNetworkHosted() has looked it up.
+ *
+ * @param {string} domain
+ * @returns {HostingCheck|undefined}
+ */
+export function cachedDsResult(domain) {
+  if (!memCache) return undefined;
+  const hit = memCache[`ds:${String(domain || '').trim().toLowerCase()}`];
+  return hit && Date.now() - hit.at < CACHE_TTL_MS ? hit.result : undefined;
+}
+
+/** Domain part of an email address. */
+export function emailDomain(email) {
+  const at = String(email || '').lastIndexOf('@');
+  return at === -1 ? '' : email.slice(at + 1).toLowerCase();
+}
+
+/**
+ * Check the mail hosting of every email domain in the given leads (each
+ * domain once). Failures are kept as { detected: false, error } so they are
+ * hidden, and the rest carry on.
+ *
+ * @param {object[]} leads
+ * @param {{ signal?: AbortSignal, fetchImpl?: typeof fetch, onResult?: (domain: string, result: HostingCheck) => void }} [opts]
+ * @returns {Promise<Map<string, HostingCheck>>}
+ */
+export async function checkEmailDomains(leads, opts = {}) {
+  const domains = new Set();
+  for (const lead of leads) for (const e of (lead && lead.emails) || []) domains.add(emailDomain(e.email));
+  domains.delete('');
+  const out = new Map();
+  await Promise.all(
+    [...domains].map(async (d) => {
+      const r = await isDsNetworkHosted(d, opts);
+      out.set(d, r);
+      if (opts.onResult) opts.onResult(d, r);
     })
-    .finally(() => inFlight.delete(key));
-  inFlight.set(key, p);
-  return p;
+  );
+  return out;
+}
+
+/**
+ * Badge text for an email that passed the filter: "ds.network (MX)" or "(NS)".
+ *
+ * @param {HostingCheck|null|undefined} check
+ * @returns {string}
+ */
+export function dsLabel(check) {
+  if (!check || !check.detected) return '';
+  return `ds.network (${check.type === 'mx' ? 'MX' : 'NS'})`;
+}
+
+/** chrome.storage.local key for "Only show emails hosted on ds.network (rc.ds.network)". */
+export const DS_ONLY_KEY = 'onlyDsNetworkEmails';
+
+/** Read the ds.network email filter toggle. */
+export async function getDsOnly() {
+  if (!hasChromeStorage()) return false;
+  try {
+    return !!(await chrome.storage.local.get(DS_ONLY_KEY))[DS_ONLY_KEY];
+  } catch {
+    return false;
+  }
+}
+
+/** Save the ds.network email filter toggle (shared by the popup and the bulk scanner). */
+export async function setDsOnly(on) {
+  if (hasChromeStorage()) await chrome.storage.local.set({ [DS_ONLY_KEY]: !!on });
 }
 
 /**

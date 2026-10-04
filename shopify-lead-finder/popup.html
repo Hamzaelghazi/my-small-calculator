@@ -37,6 +37,12 @@
       <span>Only show Crazy Domains hosted stores</span>
     </label>
 
+    <!-- Filter layer: when on, only emails whose domain's MX records point at ds.network are shown. -->
+    <label class="toggle">
+      <input type="checkbox" id="dsOnly">
+      <span>Only show emails hosted on ds.network (rc.ds.network)</span>
+    </label>
+
     <button type="button" id="scanBtn" class="btn btn-primary btn-block btn-scan" disabled>Scan this store</button>
 
     <p id="progress" class="progress" role="status" aria-live="polite" hidden>

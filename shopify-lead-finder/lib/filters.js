@@ -4,6 +4,7 @@
 
 import { TAGS, TAG_ORDER, leadBestPhone } from './scanner.js';
 import { SIZE_ORDER, leadTier } from './sales.js';
+import { emailDomain } from './dns.js';
 
 /** One-click tag selections. */
 export const PRESETS = {
@@ -50,14 +51,35 @@ export function isSizeFilterActive(sizes) {
 }
 
 /**
- * Apply the phone, store-size and email tag filters.
+ * ds.network email filter: keep only emails whose domain's mail is hosted on
+ * ds.network, and attach the DNS evidence to each as `mail`. Extraction is
+ * untouched; this only filters what was already found.
  *
  * @param {object} lead
- * @param {{ tags: Set<string>, sizes: Set<string>, phoneOnly?: boolean }} f
+ * @param {(domain: string) => (object|undefined)} mailCheck Result of isDsNetworkHosted() for a domain,
+ *   or undefined if not looked up yet (treated as hidden until it is).
+ * @returns {object|null} null when no email matches.
+ */
+export function applyMailFilter(lead, mailCheck) {
+  const emails = (lead.emails || [])
+    .map((e) => ({ ...e, mail: mailCheck(emailDomain(e.email)) }))
+    .filter((e) => e.mail && e.mail.detected);
+  if (!emails.length) return null;
+  const best = emails.find((e) => e.score >= 0);
+  return { ...lead, emails, bestEmail: best ? best.email : null };
+}
+
+/**
+ * Apply the phone, store-size, email tag and (optional) ds.network filters.
+ *
+ * @param {object} lead
+ * @param {{ tags: Set<string>, sizes: Set<string>, phoneOnly?: boolean, mailCheck?: Function|null }} f
  * @returns {object|null} null when the lead is filtered out.
  */
-export function applyFilters(lead, { tags, sizes, phoneOnly = false }) {
+export function applyFilters(lead, { tags, sizes, phoneOnly = false, mailCheck = null }) {
   if (phoneOnly && !leadBestPhone(lead)) return null;
   if (isSizeFilterActive(sizes) && !sizes.has(leadTier(lead))) return null;
-  return applyTagFilter(lead, tags);
+  const tagged = applyTagFilter(lead, tags);
+  if (!tagged || !mailCheck) return tagged;
+  return applyMailFilter(tagged, mailCheck);
 }

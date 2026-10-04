@@ -74,6 +74,20 @@ The lower section lists every saved lead, including ones saved from the popup.
 
 CSV columns: Store Name, URL, Shopify, MyShopify Domain, Best Email, Best Email Tag, Best Phone, All Emails, Phones, WhatsApp, Instagram, Facebook, TikTok, LinkedIn, X, YouTube, Pinterest, Est. Monthly Sales, Store Size, Suggested Offer, Products, Median Price, Tech Stack, Status, First Scanned, Scanned At. There's one row per store, so a store never appears twice even if you scan it again. The file is UTF-8 with a BOM, so Excel opens accented characters correctly.
 
+## Only emails hosted on ds.network
+
+**Only show emails hosted on ds.network (rc.ds.network)** is a filter over the emails the scan already found. It sits in the popup under the store name, and in the bulk scanner's **Filter** panel under Contact; the two share one setting. Turning it on doesn't change how emails are extracted and doesn't re-scan anything.
+
+- **Off:** every email shows, as before.
+- **On:** each email's domain (the part after `@`) gets an MX lookup. Only emails whose mail servers belong to the ds.network platform behind `rc.ds.network` are kept. That platform serves Crazy Domains, Vodien and other Dreamscape Networks brands. Matches show a **ds.network (MX)** badge and the mail server, for example `mail.ds.network`.
+- **What counts as ds.network:** an MX hostname matching `ds.network`, `crazydomains`, `syrahost`, `premium.exchange` or `xion.oxcs.net`. If a domain has no MX records, its nameservers are checked against the same list, and a match shows as **ds.network (NS)**.
+- **The domain name itself never counts.** `info@crazydomains-fan.com` with Google mail is hidden, and `care@designstuff.com` on ds.network mail is kept.
+- **Effects of the filter:** the best email is picked again from the matching emails. Stores with no match are hidden in the tables ("N stores hidden by the filter"). Copy all best emails and Export CSV use only the matching emails. The CSV's **Mail Host** column shows the best email's mail server.
+- **Errors:** if a domain's DNS lookup fails, its emails are hidden and the rest carry on.
+- **Caching:** answers are cached in `chrome.storage.local` for 24 hours, so each domain is looked up once. Saved leads keep every email; turn the filter off to see them all again.
+
+This is separate from **Only show Crazy Domains hosted stores** below. That option checks the store's own website domain and skips whole stores; this one checks each email's domain and only hides emails.
+
 ## Only Crazy Domains hosted stores
 
 Turn on **Only show Crazy Domains hosted stores**, either in the popup (under the store name) or in the bulk scanner options. The two share one setting. When it's on, each store's DNS is checked before the page scan:

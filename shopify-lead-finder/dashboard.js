@@ -13,7 +13,18 @@ import {
   onHistoryChanged,
 } from './lib/storage.js';
 import { buildScanIndex, isAlreadyScanned, describePrevious, formatDate } from './lib/history.js';
-import { isCrazyDomainsHosted, hostingLabel, getCrazyDomainsOnly, setCrazyDomainsOnly } from './lib/dns.js';
+import {
+  isCrazyDomainsHosted,
+  hostingLabel,
+  getCrazyDomainsOnly,
+  setCrazyDomainsOnly,
+  checkEmailDomains,
+  cachedDsResult,
+  preloadDnsCache,
+  dsLabel,
+  getDsOnly,
+  setDsOnly,
+} from './lib/dns.js';
 import { downloadCsv } from './lib/csv.js';
 import { h, copyText, copyButton, toast, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
@@ -139,12 +150,53 @@ function setPhoneOnly(on) {
 }
 
 /** Current filters, as passed to applyFilters(). */
+/* ds.network email filter: a layer over the extracted emails, nothing is re-scanned. */
+let dsOnly = false;
+/** Email domains still being looked up, for the status note. */
+let dsPending = 0;
+
+/** Look up the mail servers of every email domain on screen, re-rendering as answers arrive. */
+async function checkVisibleEmailDomains() {
+  if (!dsOnly) return;
+  const leads = [...Object.values(savedLeads), ...runResults.map((r) => r.res)];
+  const domains = new Set(leads.flatMap((l) => (l.emails || []).map((e) => e.email.split('@').pop())));
+  dsPending = [...domains].filter((d) => !cachedDsResult(d)).length;
+  renderFilterBar();
+  await checkEmailDomains(leads, {
+    onResult: () => {
+      dsPending = Math.max(0, dsPending - 1);
+      scheduleFilterRender();
+    },
+  });
+  dsPending = 0;
+  scheduleFilterRender();
+}
+
+let filterRenderTimer;
+function scheduleFilterRender() {
+  clearTimeout(filterRenderTimer);
+  filterRenderTimer = setTimeout(() => {
+    renderFilterBar();
+    renderResults();
+    renderSaved();
+  }, 250);
+}
+
+async function setDsFilter(on) {
+  dsOnly = on;
+  await setDsOnly(on);
+  renderFilterBar();
+  renderResults();
+  renderSaved();
+  checkVisibleEmailDomains();
+}
+
 function filters() {
-  return { tags: tagFilter, sizes: sizeFilter, phoneOnly };
+  return { tags: tagFilter, sizes: sizeFilter, phoneOnly, mailCheck: dsOnly ? cachedDsResult : null };
 }
 
 function anyFilterActive() {
-  return phoneOnly || isFilterActive(tagFilter) || isSizeFilterActive(sizeFilter);
+  return dsOnly || phoneOnly || isFilterActive(tagFilter) || isSizeFilterActive(sizeFilter);
 }
 
 function setSizeFilter(sizes) {
@@ -248,7 +300,20 @@ function renderFilterBar() {
     'Has phone number'
   );
   phoneChip.addEventListener('click', () => setPhoneOnly(!phoneOnly));
-  $('contactChips').replaceChildren(phoneChip);
+  const dsChip = h(
+    'button',
+    {
+      type: 'button',
+      class: 'chip',
+      'aria-pressed': String(dsOnly),
+      title: 'Checks the MX records of each email’s domain and keeps only those on ds.network mail (rc.ds.network)',
+    },
+    h('span', { class: 'chip-check', 'aria-hidden': 'true', text: dsOnly ? '✓' : '' }),
+    'Only show emails hosted on ds.network (rc.ds.network)',
+    dsOnly && dsPending ? h('span', { class: 'chip-sub', text: `checking ${dsPending} domain${dsPending === 1 ? '' : 's'}…` }) : null
+  );
+  dsChip.addEventListener('click', () => setDsFilter(!dsOnly));
+  $('contactChips').replaceChildren(phoneChip, dsChip);
 
   $('filterNote').textContent = anyFilterActive()
     ? 'Stores that don’t match are hidden. Best email, copy and CSV export use only what’s selected.'
@@ -342,7 +407,10 @@ function bestEmailCell(lead, { withTag = true } = {}) {
     'button',
     { type: 'button', class: 'email-copy', title: 'Click to copy', 'aria-label': `Copy ${lead.bestEmail}` },
     h('span', { text: lead.bestEmail }),
-    withTag && best ? tagBadge(best.tag) : null
+    withTag && best ? tagBadge(best.tag) : null,
+    best && best.mail && best.mail.detected
+      ? h('span', { class: 'badge badge-hosting', text: dsLabel(best.mail), title: `Mail server: ${best.mail.evidence}` })
+      : null
   );
   btn.addEventListener('click', async () => {
     toast((await copyText(lead.bestEmail)) ? `Copied ${lead.bestEmail}` : 'Copy failed');
@@ -401,6 +469,7 @@ function detailRow(res, colSpan) {
             h('span', { class: 'addr', text: e.email, title: `Found on ${e.sources.join(', ')}` }),
             tagBadge(e.tag),
             h('span', { class: 'score', text: `Score ${e.score}` }),
+            e.mail && e.mail.detected ? h('span', { class: 'score', text: `${dsLabel(e.mail)}: ${e.mail.evidence}` }) : null,
             copyButton(e.email)
           )
         )
@@ -641,6 +710,9 @@ async function start(retryList) {
       active.delete(url);
       if (signal.aborted) return; // stopped mid-scan: drop the partial result
       if (hosting) res.hosting = hosting;
+      // With the ds.network filter on, look up this store's email domains before
+      // its row is drawn, so it appears already filtered.
+      if (dsOnly && res.emails.length) await checkEmailDomains([res], { signal });
 
       const previous = scanIndex.get(url) || scanIndex.get(res.url);
       const entry = { res, saveState: 'error', origin: url, previous };
@@ -913,11 +985,20 @@ async function init() {
     rebuildIndex();
     scheduleRenderSaved();
   });
+  // The popup can flip the shared ds.network toggle while this tab is open.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.onlyDsNetworkEmails && !!changes.onlyDsNetworkEmails.newValue !== dsOnly) {
+      setDsFilter(!!changes.onlyDsNetworkEmails.newValue);
+    }
+  });
   [savedLeads, scanHistory] = await Promise.all([getLeads(), getHistory()]);
   rebuildIndex();
+  await preloadDnsCache();
+  dsOnly = await getDsOnly();
   renderFilterBar();
   renderSaved();
   updateUrlCount();
+  checkVisibleEmailDomains();
 }
 
 init();

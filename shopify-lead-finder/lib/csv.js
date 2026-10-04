@@ -3,7 +3,7 @@
  */
 
 import { leadBestPhone, leadPhoneDetails } from './scanner.js';
-import { hostingLabel } from './dns.js';
+import { hostingLabel, dsLabel } from './dns.js';
 
 export const CSV_COLUMNS = [
   'Store Name',
@@ -30,6 +30,7 @@ export const CSV_COLUMNS = [
   'Median Price',
   'Tech Stack',
   'DNS Host',
+  'Mail Host',
   'Status',
   'First Scanned',
   'Scanned At',
@@ -97,6 +98,8 @@ export function leadToRow(lead) {
     sales && sales.medianPrice != null ? `${sales.currency ? sales.currency + ' ' : ''}${sales.medianPrice}` : '',
     sales ? sales.apps.join('; ') : '',
     lead.hosting && lead.hosting.detected ? `${hostingLabel(lead.hosting)}: ${lead.hosting.evidence}` : '',
+    // Filled when exported with the ds.network email filter on: the best email's mail server.
+    best && best.mail && best.mail.detected ? `${dsLabel(best.mail)}: ${best.mail.evidence}` : '',
     statusLabel(lead),
     lead.firstScannedAt || lead.scannedAt || '',
     lead.scannedAt || '',

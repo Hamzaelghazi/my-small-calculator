@@ -218,7 +218,7 @@ test('csv escaping', () => {
     },
   ]);
   const [header, row] = csv.trim().split('\r\n');
-  assert.equal(header.split(',').length, 27);
+  assert.equal(header.split(',').length, 28);
   assert.ok(row.startsWith('"Glow, Co",https://brand.com,yes,,a@brand.com,business,,"a@brand.com; b@brand.com"'));
 });
 
@@ -527,7 +527,7 @@ test('scanStore adds a sales estimate for Shopify stores and exports it', async 
   assert.deepEqual(res.sales.apps, ['Klaviyo', 'Meta pixel']);
   assert.equal(res.sales.tier, 'small'); // 450 products +3, median 100 +1, Klaviyo +1, pixel +1 = 6
   const row = leadsToCsv([res]).trim().split('\r\n')[1];
-  assert.ok(row.includes(`${res.sales.range} (estimate),${res.sales.label},${res.sales.offer},450,EUR 100,"Klaviyo; Meta pixel",,OK`), row);
+  assert.ok(row.includes(`${res.sales.range} (estimate),${res.sales.label},${res.sales.offer},450,EUR 100,"Klaviyo; Meta pixel",,,OK`), row);
 
   const plain = await scanStore('plain.com', { fetchImpl: mockFetch({ '/': { body: '<title>Plain</title>' } }) });
   assert.equal(plain.sales, null);
@@ -762,4 +762,68 @@ test('quick scan requests far fewer pages', async () => {
 test('extractUrlsFromText keeps URLs and domains from a CSV, skips names and emails', () => {
   const csv = 'Website,Name,Email\nbrand.com,Brand 1,info@brand.com\n"https://www.shop.co.uk/collections/all",Shop Co,hello@gmail.com\nnot a site,2,\n';
   assert.deepEqual(extractUrlsFromText(csv).split('\n'), ['brand.com', 'https://www.shop.co.uk/collections/all']);
+});
+
+/* ------------------------------ ds.network email filter ------------------------------ */
+
+import { lookupDsNetwork, isDsNetworkHosted, cachedDsResult, checkEmailDomains, dsLabel } from '../lib/dns.js';
+import { applyMailFilter } from '../lib/filters.js';
+
+// The example from the request: two domains on ds.network mail, two elsewhere.
+const DS_ZONES = {
+  'designstuff.com': { NS: ['ns1.cloudflare.com'], MX: ['10 mail.ds.network'] },
+  'earlysettler.com.au': { NS: ['ns1.shopify.com'], MX: ['1 aspmx.l.google.com', '5 alt1.aspmx.l.google.com'] },
+  'superdry.com.au': { NS: ['ns1.azure-dns.com'], MX: ['0 superdry-com-au.mail.protection.outlook.com'] },
+  'wovenwood.com.au': { NS: ['ns1.syrahost.com'], MX: ['20 mx2.ds.network', '10 mx1.ds.network'] },
+  'nomail.com.au': { NS: ['ns1.crazydomains.com'] }, // no MX: falls back to NS
+  'crazydomains-fan.com': { NS: ['ns1.other.net'], MX: ['10 mx.google.com'] }, // name contains "crazydomains", mail doesn't
+};
+
+test('lookupDsNetwork uses MX records, not the domain name', async () => {
+  const { fetchImpl } = dohMock(DS_ZONES);
+  const r = async (d) => lookupDsNetwork(d, { fetchImpl });
+  assert.deepEqual(await r('designstuff.com'), { detected: true, evidence: 'mail.ds.network', type: 'mx' });
+  assert.deepEqual(await r('earlysettler.com.au'), { detected: false });
+  assert.deepEqual(await r('superdry.com.au'), { detected: false });
+  assert.deepEqual(await r('wovenwood.com.au'), { detected: true, evidence: 'mx1.ds.network', type: 'mx' }, 'lowest priority MX first');
+  assert.deepEqual(await r('nomail.com.au'), { detected: true, evidence: 'ns1.crazydomains.com', type: 'nameserver' });
+  assert.deepEqual(await r('crazydomains-fan.com'), { detected: false }, 'domain string alone never matches');
+
+  const down = dohMock({}, { fail: ['dns.google', 'cloudflare-dns.com'] });
+  const e = await lookupDsNetwork('designstuff.com', { fetchImpl: down.fetchImpl });
+  assert.equal(e.detected, false);
+  assert.ok(e.error);
+});
+
+test('ds.network filter keeps only matching emails, with evidence', async () => {
+  const { fetchImpl, calls } = dohMock(DS_ZONES);
+  const lead = {
+    url: 'https://x.com',
+    emails: [
+      { email: 'info@earlysettler.com.au', score: 6, tag: 'business', sources: ['/'] },
+      { email: 'care@designstuff.com', score: 5, tag: 'business', sources: ['/'] },
+      { email: 'support@superdry.com.au', score: 4, tag: 'support', sources: ['/'] },
+      { email: 'hello@wovenwood.com.au', score: 3, tag: 'business', sources: ['/'] },
+      { email: 'sales@wovenwood.com.au', score: 3, tag: 'business', sources: ['/'] },
+    ],
+    bestEmail: 'info@earlysettler.com.au',
+  };
+  await checkEmailDomains([lead], { fetchImpl });
+  // 4 distinct domains, each checked once (MX), none needed the NS fallback.
+  assert.equal(calls.filter((c) => c.endsWith(' 15')).length, 4);
+  const f = applyMailFilter(lead, cachedDsResult);
+  assert.deepEqual(f.emails.map((e) => e.email), ['care@designstuff.com', 'hello@wovenwood.com.au', 'sales@wovenwood.com.au']);
+  assert.equal(f.bestEmail, 'care@designstuff.com');
+  assert.equal(dsLabel(f.emails[0].mail), 'ds.network (MX)');
+  assert.equal(lead.emails.length, 5, 'original extraction untouched');
+
+  // Cached: a second pass makes no new queries.
+  const n = calls.length;
+  await isDsNetworkHosted('designstuff.com', { fetchImpl });
+  assert.equal(calls.length, n);
+
+  const row = leadsToCsv([f]).trim().split('\r\n')[1];
+  assert.ok(row.includes(',ds.network (MX): mail.ds.network,'), row);
+
+  assert.equal(applyMailFilter({ emails: [{ email: 'a@earlysettler.com.au', score: 1 }] }, cachedDsResult), null);
 });
