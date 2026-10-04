@@ -218,7 +218,7 @@ test('csv escaping', () => {
     },
   ]);
   const [header, row] = csv.trim().split('\r\n');
-  assert.equal(header.split(',').length, 26);
+  assert.equal(header.split(',').length, 27);
   assert.ok(row.startsWith('"Glow, Co",https://brand.com,yes,,a@brand.com,business,,"a@brand.com; b@brand.com"'));
 });
 
@@ -527,7 +527,7 @@ test('scanStore adds a sales estimate for Shopify stores and exports it', async 
   assert.deepEqual(res.sales.apps, ['Klaviyo', 'Meta pixel']);
   assert.equal(res.sales.tier, 'small'); // 450 products +3, median 100 +1, Klaviyo +1, pixel +1 = 6
   const row = leadsToCsv([res]).trim().split('\r\n')[1];
-  assert.ok(row.includes(`${res.sales.range} (estimate),${res.sales.label},${res.sales.offer},450,EUR 100,"Klaviyo; Meta pixel",OK`), row);
+  assert.ok(row.includes(`${res.sales.range} (estimate),${res.sales.label},${res.sales.offer},450,EUR 100,"Klaviyo; Meta pixel",,OK`), row);
 
   const plain = await scanStore('plain.com', { fetchImpl: mockFetch({ '/': { body: '<title>Plain</title>' } }) });
   assert.equal(plain.sales, null);
@@ -615,4 +615,92 @@ test('has-phone filter', () => {
   const f = { tags: new Set(PRESETS.all), sizes: new Set(SIZE_ORDER), phoneOnly: true };
   assert.ok(applyFilters(withPhone, f));
   assert.equal(applyFilters(without, f), null);
+});
+
+/* ------------------------------ Crazy Domains DNS ------------------------------ */
+
+import { lookupCrazyDomains, isCrazyDomainsHosted, getMxRecords, domainCandidates, hostingLabel } from '../lib/dns.js';
+
+/**
+ * Fake DoH resolver. `zones` maps name → { NS: [...], MX: [...] }.
+ * `fail` makes every request to a host throw (e.g. 'dns.google').
+ */
+function dohMock(zones, { fail = [] } = {}) {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const u = new URL(url);
+    calls.push(`${u.hostname} ${u.searchParams.get('name')} ${u.searchParams.get('type')}`);
+    if (fail.includes(u.hostname)) throw new TypeError('Failed to fetch');
+    const name = u.searchParams.get('name');
+    const type = Number(u.searchParams.get('type'));
+    const z = zones[name] || {};
+    const Answer = [];
+    if (type === 2) for (const ns of z.NS || []) Answer.push({ name, type: 2, data: ns + '.' });
+    // Real MX data is "<priority> <host>."; entries without a priority get 10.
+    if (type === 15) for (const mx of z.MX || []) Answer.push({ name, type: 15, data: (/\s/.test(mx) ? mx : '10 ' + mx) + '.' });
+    return new Response(JSON.stringify({ Status: zones[name] ? 0 : 3, Answer }), { headers: { 'content-type': 'application/dns-json' } });
+  };
+  return { fetchImpl, calls };
+}
+
+test('domainCandidates walks from host to apex', () => {
+  assert.deepEqual(domainCandidates('https://www.shop.brand.com.au/x'), ['shop.brand.com.au', 'brand.com.au', 'com.au']);
+  assert.deepEqual(domainCandidates('brand.com'), ['brand.com']);
+});
+
+test('Crazy Domains detected by nameserver (from a www/subdomain)', async () => {
+  const { fetchImpl } = dohMock({ 'brand.com.au': { NS: ['ns1.crazydomains.com', 'ns2.crazydomains.com'], MX: ['mx.google.com'] } });
+  assert.deepEqual(await lookupCrazyDomains('www.shop.brand.com.au', { fetchImpl }), {
+    detected: true,
+    evidence: 'ns1.crazydomains.com',
+    type: 'nameserver',
+  });
+  const syra = dohMock({ 'x.com': { NS: ['ns1.syrahost.com'] } });
+  assert.equal((await lookupCrazyDomains('x.com', { fetchImpl: syra.fetchImpl })).evidence, 'ns1.syrahost.com');
+});
+
+test('falls back to MX when NS does not match', async () => {
+  const { fetchImpl } = dohMock({ 'brand.com': { NS: ['ns1.cloudflare.com'], MX: ['20 backup.example.net', '10 mx1.ds.network'] } });
+  const r = await lookupCrazyDomains('brand.com', { fetchImpl });
+  assert.equal(r.detected, true);
+  assert.equal(r.type, 'mx');
+  assert.equal(r.evidence, 'mx1.ds.network');
+  const oxcs = dohMock({ 'b.com': { NS: ['ns.other.net'], MX: ['mail.xion.oxcs.net'] } });
+  assert.equal((await lookupCrazyDomains('b.com', { fetchImpl: oxcs.fetchImpl })).evidence, 'mail.xion.oxcs.net');
+});
+
+test('MX records sorted by priority', async () => {
+  const fetchImpl = async () =>
+    new Response(JSON.stringify({ Status: 0, Answer: [{ type: 15, data: '20 b.mx.net.' }, { type: 15, data: '10 a.mx.net.' }, { type: 5, data: 'cname.' }] }));
+  assert.deepEqual(await getMxRecords('x.com', { fetchImpl }), ['a.mx.net', 'b.mx.net']);
+});
+
+test('not detected, Cloudflare fallback, and total failure', async () => {
+  const plain = dohMock({ 'plain.com': { NS: ['ns1.shopify.com'], MX: ['aspmx.l.google.com'] } });
+  assert.deepEqual(await lookupCrazyDomains('plain.com', { fetchImpl: plain.fetchImpl }), { detected: false });
+
+  const googleDown = dohMock({ 'cd.com': { NS: ['ns1.crazydomains.com'] } }, { fail: ['dns.google'] });
+  const r = await lookupCrazyDomains('cd.com', { fetchImpl: googleDown.fetchImpl });
+  assert.equal(r.detected, true);
+  assert.ok(googleDown.calls.some((c) => c.startsWith('cloudflare-dns.com')), 'used Cloudflare');
+
+  const allDown = dohMock({}, { fail: ['dns.google', 'cloudflare-dns.com'] });
+  const e = await lookupCrazyDomains('down.com', { fetchImpl: allDown.fetchImpl });
+  assert.equal(e.detected, false);
+  assert.match(e.error, /DNS lookup failed/);
+});
+
+test('isCrazyDomainsHosted caches successful lookups, not failures', async () => {
+  const ok = dohMock({ 'cached.com': { NS: ['ns1.crazydomains.com'] } });
+  await isCrazyDomainsHosted('www.cached.com', { fetchImpl: ok.fetchImpl });
+  const n = ok.calls.length;
+  const again = await isCrazyDomainsHosted('cached.com', { fetchImpl: ok.fetchImpl });
+  assert.equal(ok.calls.length, n, 'second lookup served from cache');
+  assert.equal(hostingLabel(again), 'Crazy Domains (NS)');
+
+  const down = dohMock({}, { fail: ['dns.google', 'cloudflare-dns.com'] });
+  await isCrazyDomainsHosted('flaky.com', { fetchImpl: down.fetchImpl });
+  const before = down.calls.length;
+  await isCrazyDomainsHosted('flaky.com', { fetchImpl: down.fetchImpl });
+  assert.ok(down.calls.length > before, 'failed lookup retried');
 });

@@ -2,10 +2,10 @@
   "manifest_version": 3,
   "name": "Shopify Lead Finder",
   "short_name": "Lead Finder",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Find publicly listed contact emails, phones and socials of Shopify stores, rank the best email, and export leads to CSV.",
   "permissions": ["storage", "unlimitedStorage", "activeTab"],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": ["<all_urls>", "https://dns.google/*", "https://cloudflare-dns.com/*"],
   "options_page": "dashboard.html",
   "commands": {
     "_execute_action": {

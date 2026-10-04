@@ -277,3 +277,10 @@ a {
   background: var(--surface);
   color: var(--ink);
 }
+
+/* Crazy Domains hosting match */
+.badge-hosting {
+  background: transparent;
+  border-color: var(--accent-text);
+  color: var(--accent-text);
+}

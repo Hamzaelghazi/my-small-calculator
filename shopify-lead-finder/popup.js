@@ -1,6 +1,7 @@
 import { scanStore, normalizeInput, rescoreLead, leadPhoneDetails, PHONE_TYPES } from './lib/scanner.js';
 import { getLeads, saveLead, onLeadsChanged, getHistory, recordScans } from './lib/storage.js';
 import { buildScanIndex, describePrevious } from './lib/history.js';
+import { isCrazyDomainsHosted, hostingLabel, getCrazyDomainsOnly, setCrazyDomainsOnly } from './lib/dns.js';
 import { h, copyButton, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -47,7 +48,7 @@ function showMessage({ title, body, links = [], error = false }) {
   el.replaceChildren(
     h('h2', { text: title }),
     h('p', { text: body }),
-    links.length ? h('div', { class: 'state-links' }, links) : null
+    ...(links.length ? [h('div', { class: 'state-links' }, links)] : [])
   );
   el.classList.toggle('is-error', error);
   el.hidden = false;
@@ -55,6 +56,15 @@ function showMessage({ title, body, links = [], error = false }) {
 
 function hideMessage() {
   $('message').hidden = true;
+}
+
+/** "Crazy Domains (NS)" / "(MX)" badge next to the platform badge. */
+function hostingBadge(res) {
+  const el = $('hosting');
+  const label = hostingLabel(res && res.hosting);
+  el.hidden = !label;
+  el.textContent = label;
+  el.title = label ? `Matched ${res.hosting.type === 'mx' ? 'mail server' : 'nameserver'}: ${res.hosting.evidence}` : '';
 }
 
 function platformBadge(res) {
@@ -229,6 +239,7 @@ function render(res) {
   const out = $('results');
   hideMessage();
   platformBadge(res);
+  hostingBadge(res);
 
   if (res.status === 'error') {
     out.hidden = true;
@@ -278,11 +289,41 @@ async function scan() {
   $('progressText').textContent = 'Checking homepage…';
   $('progress').hidden = false;
 
+  // Crazy Domains filter: check DNS first (two small queries) and only run
+  // the full page scan when the store matches.
+  let hosting = null;
+  if ($('cdOnly').checked) {
+    $('progressText').textContent = 'Checking DNS for Crazy Domains…';
+    hosting = await isCrazyDomainsHosted(origin);
+    if (!hosting.detected) {
+      $('progress').hidden = true;
+      btn.disabled = false;
+      btn.textContent = 'Scan this store';
+      $('platform').hidden = true;
+      hostingBadge(null);
+      showMessage(
+        hosting.error
+          ? {
+              title: 'Couldn’t check DNS',
+              body: `${hosting.error}. Try again, or turn off “Only show Crazy Domains hosted stores” to scan it anyway.`,
+              error: true,
+            }
+          : {
+              title: 'Not hosted on Crazy Domains',
+              body: 'Its nameservers and mail servers don’t point at Crazy Domains, so it was skipped. Turn off the toggle to scan it anyway.',
+            }
+      );
+      return;
+    }
+    $('progressText').textContent = 'Checking homepage…';
+  }
+
   const res = await scanStore(origin, {
     onProgress: (p) => {
       $('progressText').textContent = progressText(p);
     },
   });
+  if (hosting) res.hosting = hosting;
   try {
     await recordScans([{ result: res, origin }]);
   } catch {
@@ -321,6 +362,9 @@ async function findSaved(leads) {
 
 async function init() {
   $('scanBtn').addEventListener('click', scan);
+  // The toggle is shared with the bulk scanner through chrome.storage.local.
+  $('cdOnly').checked = await getCrazyDomainsOnly();
+  $('cdOnly').addEventListener('change', () => setCrazyDomainsOnly($('cdOnly').checked));
   $('saveBtn').addEventListener('click', save);
   $('openDashboard').addEventListener('click', () => {
     chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });

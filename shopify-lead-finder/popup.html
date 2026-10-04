@@ -23,10 +23,19 @@
         <span class="site-label">Current tab</span>
         <span class="site-domain" id="domain">Loading…</span>
       </div>
-      <span id="platform" hidden></span>
+      <div class="site-badges">
+        <span id="hosting" class="badge badge-hosting" hidden></span>
+        <span id="platform" hidden></span>
+      </div>
     </div>
 
     <p id="seen" class="seen" role="status" hidden></p>
+
+    <!-- When on, the store is only scanned if its DNS points at Crazy Domains. -->
+    <label class="toggle">
+      <input type="checkbox" id="cdOnly">
+      <span>Only show Crazy Domains hosted stores</span>
+    </label>
 
     <button type="button" id="scanBtn" class="btn btn-primary btn-block btn-scan" disabled>Scan this store</button>
 

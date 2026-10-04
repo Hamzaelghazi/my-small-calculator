@@ -594,3 +594,13 @@ textarea:focus,
   min-width: 180px;
   font-weight: 500;
 }
+
+.cell-badge {
+  display: inline-flex;
+  margin: 3px 0 0;
+  font-weight: 500;
+}
+.cell-store .cell-badge {
+  display: flex;
+  width: max-content;
+}

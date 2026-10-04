@@ -13,6 +13,7 @@ import {
   onHistoryChanged,
 } from './lib/storage.js';
 import { buildScanIndex, isAlreadyScanned, describePrevious, formatDate } from './lib/history.js';
+import { isCrazyDomainsHosted, hostingLabel, getCrazyDomainsOnly, setCrazyDomainsOnly } from './lib/dns.js';
 import { downloadCsv } from './lib/csv.js';
 import { h, copyText, copyButton, toast, tagBadge, socialLinks, safeHref, displayHost } from './lib/ui.js';
 
@@ -355,6 +356,17 @@ function statusCell(res, saveState, previous) {
   return h('span', { class: `status ${cls}` }, label, before);
 }
 
+/** "Crazy Domains (NS)" / "(MX)" badge, or null when the store didn't match. */
+function hostingBadgeEl(lead) {
+  const label = hostingLabel(lead.hosting);
+  if (!label) return null;
+  return h('span', {
+    class: 'badge badge-hosting cell-badge',
+    text: label,
+    title: `Matched ${lead.hosting.type === 'mx' ? 'mail server' : 'nameserver'}: ${lead.hosting.evidence}`,
+  });
+}
+
 /** Best phone as a click-to-call link. */
 function phoneCell(lead) {
   const phone = leadBestPhone(lead);
@@ -412,7 +424,7 @@ function resultRows({ res: orig, saveState, previous }) {
   const row = h(
     'tr',
     { class: 'row-new' },
-    h('td', { class: 'cell-store' }, res.storeName || displayHost(res.url || res.input) || res.input),
+    h('td', { class: 'cell-store' }, res.storeName || displayHost(res.url || res.input) || res.input, hostingBadgeEl(res)),
     h(
       'td',
       { class: 'cell-url' },
@@ -473,7 +485,7 @@ function setRunning(running) {
   $('stopBtn').disabled = !running;
   $('urls').disabled = running;
   $('retryBtn').disabled = running;
-  document.querySelectorAll('input[name="concurrency"], #shopifyOnly, #skipSaved').forEach((el) => {
+  document.querySelectorAll('input[name="concurrency"], #shopifyOnly, #skipSaved, #cdOnly').forEach((el) => {
     el.disabled = running;
   });
   $('startBtn').textContent = running ? 'Scanning…' : 'Start scan';
@@ -493,6 +505,8 @@ function renderProgress(stats, active) {
   let text = `${stats.done} of ${stats.total} scanned, ${stats.emails} email${stats.emails === 1 ? '' : 's'} found`;
   if (stats.failed) text += ` · ${stats.failed} failed`;
   if (stats.skipped) text += ` · ${stats.skipped} skipped (already scanned)`;
+  if (stats.notCd) text += ` · ${stats.notCd} not on Crazy Domains`;
+  if (stats.dnsFailed) text += ` · ${stats.dnsFailed} DNS check failed`;
   $('progressText').textContent = text;
 
   let side = '';
@@ -526,7 +540,7 @@ function renderSkipped(list) {
     ...list.slice(0, LIMIT).map(({ origin, prev }) =>
       h('li', {}, h('span', { class: 'skipped-host', text: displayHost(origin) }), h('span', { class: 'muted', text: describePrevious(prev) }))
     ),
-    list.length > LIMIT ? h('li', { class: 'muted', text: `…and ${list.length - LIMIT} more` }) : null
+    ...(list.length > LIMIT ? [h('li', { class: 'muted', text: `…and ${list.length - LIMIT} more` })] : [])
   );
 }
 
@@ -573,7 +587,7 @@ async function start(retryList) {
   $('resultsWrap').hidden = true;
   renderHiddenNote($('resultsHidden'), 0, 'store');
 
-  const stats = { total: queue.length, done: 0, emails: 0, failed: 0, skipped, startedAt: Date.now() };
+  const stats = { total: queue.length, done: 0, emails: 0, failed: 0, skipped, notCd: 0, dnsFailed: 0, startedAt: Date.now() };
   const active = new Set();
   renderProgress(stats, active);
 
@@ -585,6 +599,7 @@ async function start(retryList) {
   controller = new AbortController();
   const { signal } = controller;
   const shopifyOnly = $('shopifyOnly').checked;
+  const cdOnly = $('cdOnly').checked;
   setRunning(true);
 
   await runPool(
@@ -593,9 +608,28 @@ async function start(retryList) {
     async (url) => {
       active.add(url);
       renderProgress(stats, active);
+
+      // Crazy Domains filter: check DNS before the (much heavier) page scan.
+      // Non-matching stores and failed DNS lookups are skipped, not shown or
+      // saved, and the run carries on with the next store.
+      let hosting = null;
+      if (cdOnly) {
+        hosting = await isCrazyDomainsHosted(url, { signal });
+        if (signal.aborted) return;
+        if (!hosting.detected) {
+          active.delete(url);
+          if (hosting.error) stats.dnsFailed++;
+          else stats.notCd++;
+          stats.done++;
+          renderProgress(stats, active);
+          return;
+        }
+      }
+
       const res = await scanStore(url, { signal });
       active.delete(url);
       if (signal.aborted) return; // stopped mid-scan: drop the partial result
+      if (hosting) res.hosting = hosting;
 
       const previous = scanIndex.get(url) || scanIndex.get(res.url);
       const entry = { res, saveState: 'error', origin: url, previous };
@@ -686,6 +720,7 @@ function savedRow(lead) {
       'td',
       { class: 'cell-store' },
       name,
+      hostingBadgeEl(lead),
       href
         ? h('small', {}, h('a', { href, target: '_blank', rel: 'noopener noreferrer', text: displayHost(href) }))
         : null
@@ -796,6 +831,9 @@ async function init() {
     if (controller) e.preventDefault();
   });
   $('startBtn').addEventListener('click', () => start());
+  // Shared with the popup through chrome.storage.local.
+  $('cdOnly').checked = await getCrazyDomainsOnly();
+  $('cdOnly').addEventListener('change', () => setCrazyDomainsOnly($('cdOnly').checked));
   $('stopBtn').addEventListener('click', stop);
   $('search').addEventListener('input', scheduleRenderSaved);
   $('exportBtn').addEventListener('click', () => {

@@ -75,6 +75,22 @@ The lower section lists every saved lead, including ones saved from the popup.
 
 CSV columns: Store Name, URL, Shopify, MyShopify Domain, Best Email, Best Email Tag, Best Phone, All Emails, Phones, WhatsApp, Instagram, Facebook, TikTok, LinkedIn, X, YouTube, Pinterest, Est. Monthly Sales, Store Size, Suggested Offer, Products, Median Price, Tech Stack, Status, First Scanned, Scanned At. There's one row per store, so a store never appears twice even if you scan it again. The file is UTF-8 with a BOM, so Excel opens accented characters correctly.
 
+## Only Crazy Domains hosted stores
+
+Turn on **Only show Crazy Domains hosted stores**, either in the popup (under the store name) or in the bulk scanner options. The two share one setting. When it's on, each store's DNS is checked before the page scan:
+
+1. **Nameservers (NS):** a match on `crazydomains.com`, `syrahost.com`, `premium.exchange` or `dnspackage.com` gives **Crazy Domains (NS)**.
+2. If no nameserver matched, **mail servers (MX):** a match on `ds.network`, `crazydomains` or `xion.oxcs.net` gives **Crazy Domains (MX)**.
+
+Matching stores are scanned as usual and show the badge next to the store name (hover it to see the matched server). The match is also in the CSV's **DNS Host** column. Other stores are skipped, and the progress line counts them ("4 not on Crazy Domains"). If both DNS resolvers fail for a store, it's skipped too ("1 DNS check failed"), and the rest of the run continues.
+
+How it works:
+
+- DNS is read over HTTPS from Google (`dns.google`), with Cloudflare (`cloudflare-dns.com`) as a fallback, using an 8-second timeout. This sends each store's domain name to that resolver.
+- NS records live on the main domain, so `www.` is dropped, and a subdomain like `shop.brand.com.au` falls back to `brand.com.au`.
+- Results are cached in `chrome.storage.local` for 24 hours, so a domain is looked up only once. Failed lookups aren't cached, so they're retried next time.
+- Non-matching stores aren't added to the scan history, so turning the toggle off later lets you scan them normally.
+
 ## Estimated sales and suggested offer
 
 Every Shopify store gets a **store size** with an estimated monthly sales range and a suggested offer level, so you can match your offer to the prospect. It's shown in the popup ("Estimated size"), in both dashboard tables ("Est. sales"; hover for the signals), and in the CSV.
@@ -113,6 +129,7 @@ For each store, the scanner fetches:
 - the homepage (redirects are followed, and the final address becomes the store's URL)
 - `/pages/contact`, `/pages/contact-us`, `/policies/contact-information`, `/policies/privacy-policy`, `/policies/terms-of-service`, `/policies/refund-policy`, `/policies/shipping-policy`, `/pages/about`, `/pages/about-us`, `/pages/faq`
 - up to 3 more links from the homepage whose address or text mentions contact, about, support or wholesale
+- with the Crazy Domains toggle on: the domain's NS and MX records, via DNS-over-HTTPS
 - for Shopify stores: `/meta.json` and `/products.json?limit=100` (public catalog data, for the size estimate)
 
 Emails are found in plain text, in `mailto:` links, behind HTML entities and escapes (`&#64;`, `%40`, `@`), in Cloudflare-protected addresses, and in forms like `name [at] brand [dot] com`. Obvious junk is dropped: image filenames like `logo@2x.png`, placeholder domains (example.com, yourdomain.com), vendor domains (sentry, wixpress, shopify.com) and hash-like addresses.
@@ -187,6 +204,7 @@ shopify-lead-finder/
 │   ├── storage.js    chrome.storage.local helpers
 │   ├── csv.js        CSV export
 │   ├── filters.js    email tag, store size and phone filters (tables + export)
+│   ├── dns.js        DNS-over-HTTPS (NS/MX) and the Crazy Domains check
 │   ├── history.js    "already scanned" lookups from saved leads + scan history
 │   ├── sales.js      store size / sales estimate from public signals
 │   ├── ui.js         shared DOM helpers and icons
